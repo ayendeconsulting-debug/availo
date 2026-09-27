@@ -57,6 +57,8 @@ export class ReservationsController {
       pools: r.pools,
       rateKobo: kobo(r.rateKobo),
       amountKobo: kobo(r.amountKobo),
+      minHours: r.minHours,
+      maxHours: r.maxHours,
       balanceBeforeKobo: kobo(r.balanceBeforeKobo),
       balanceAfterKobo: kobo(r.balanceAfterKobo),
       // US-022: charged for the block reserved, not time used; stated before confirmation.

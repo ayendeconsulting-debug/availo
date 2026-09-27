@@ -22,6 +22,9 @@ export type AvailabilityResult =
       readonly available: number;
       readonly rateKobo: bigint;
       readonly amountKobo: bigint;
+      /** US-013: duration limits from the tariff in force. */
+      readonly minHours: number;
+      readonly maxHours: number;
       /** Wallet balance before and after, for wallet holders (US-022). Null on the checkout path. */
       readonly balanceBeforeKobo: bigint | null;
       readonly balanceAfterKobo: bigint | null;
@@ -60,6 +63,8 @@ export async function checkAvailability(store: ReservationStore, req: Availabili
       available: pools.reduce((n, p) => n + p.available, 0),
       rateKobo: tariff.hourlyRateKobo,
       amountKobo: amount,
+      minHours: tariff.minHours,
+      maxHours: tariff.maxHours,
       balanceBeforeKobo: wallet,
       balanceAfterKobo: wallet === null ? null : wallet - amount,
     } as const;

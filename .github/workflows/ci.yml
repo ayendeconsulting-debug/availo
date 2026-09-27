@@ -35,3 +35,37 @@ jobs:
       - name: US-023 capacity-boundary concurrency test (release gate)
         run: pnpm test:capacity
       - run: pnpm test
+
+  # Handover §7 "done when": the offline gate path works with the network genuinely off.
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+        ports: ["5432:5432"]
+    env:
+      E2E_PG_URL: postgres://postgres:postgres@localhost:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Offline gate, end to end in a real browser
+        run: pnpm e2e
+        env:
+          E2E_SCREENSHOTS: e2e-screens
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screens
+          path: e2e-screens

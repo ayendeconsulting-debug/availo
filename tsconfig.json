@@ -12,7 +12,13 @@
     "types": [
       "node"
     ],
-    "experimentalDecorators": true
+    "experimentalDecorators": true,
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "jsx": "react-jsx"
   },
   "include": [
     "packages/*/src",

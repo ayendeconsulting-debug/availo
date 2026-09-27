@@ -14,7 +14,7 @@ export const CACHE_HORIZON_HOURS = 24;
 interface PassRow {
   pass_id: string; reservation_id: string; reference: string; lot_id: string; lot_name: string; early_entry_minutes: number;
   s: Date; e: Date; plate: string; driver_name: string; pool_kind: string; status: string; user_id: string;
-  signed_part: string; pin_ciphertext: string; pin_lookup: string; revoked_at: Date | null; on_site: boolean;
+  signed_part: string; pin_ciphertext: string; pin_lookup: string; revoked_at: Date | null; on_site: boolean; exited: boolean; pool_kind_label?: string;
 }
 
 const PASS_SELECT = `
@@ -22,7 +22,8 @@ const PASS_SELECT = `
          lower(r.time_window) AS s, upper(r.time_window) AS e, v.plate_normalised AS plate, u.display_name AS driver_name,
          cp.kind::text AS pool_kind, r.status::text AS status, r.user_id,
          ap.signed_part, ap.pin_ciphertext, ap.pin_lookup, ap.revoked_at,
-         EXISTS (SELECT 1 FROM parking_session ps WHERE ps.reservation_id = r.id AND ps.state = 'active') AS on_site
+         EXISTS (SELECT 1 FROM parking_session ps WHERE ps.reservation_id = r.id AND ps.state = 'active') AS on_site,
+         EXISTS (SELECT 1 FROM parking_session ps WHERE ps.reservation_id = r.id AND ps.state = 'ended') AS exited
     FROM access_pass ap
     JOIN reservation r ON r.id = ap.reservation_id
     JOIN lot l ON l.id = r.lot_id
@@ -167,6 +168,7 @@ export class PassService {
       plate: p.plate,
       driverName: p.driver_name,
       accessible: p.pool_kind === "accessible",
+      pool: p.pool_kind,
       pin: this.decryptPin(p.pin_ciphertext),
       qr: { signedPart: p.signed_part, totpSecret: toBase64Url(this.totpSecret(p.pass_id)), stepSeconds: 30 },
       status: p.revoked_at ? "revoked" : p.status,
@@ -178,7 +180,7 @@ export class PassService {
    * pass whose window overlaps the next 24 hours. PIN hashes are salted fresh for
    * each cache so one device's cache cannot be matched against another's.
    */
-  async gateCache(lotId: string): Promise<{ lotId: string; pinSalt: string; generatedAt: string; validUntil: string; publicKeys: Array<{ keyId: number; publicKey: string }>; passes: GatePassEntry[] }> {
+  async gateCache(lotId: string): Promise<{ lotId: string; lotName: string; pinSalt: string; generatedAt: string; validUntil: string; publicKeys: Array<{ keyId: number; publicKey: string }>; passes: GatePassEntry[] }> {
     const now = this.clock.now();
     const until = new Date(now.getTime() + CACHE_HORIZON_HOURS * 3_600_000);
     const rows = await this.loadAll(
@@ -187,8 +189,10 @@ export class PassService {
              OR EXISTS (SELECT 1 FROM parking_session ps WHERE ps.reservation_id = r.id AND ps.state = 'active'))`,
       [lotId, now, until]);
     const salt = randomBytes(16);
+    const { rows: [lot] } = await this.pool.query<{ name: string }>("SELECT name FROM lot WHERE id = $1", [lotId]);
     return {
       lotId,
+      lotName: lot?.name ?? "",
       pinSalt: toBase64Url(salt),
       generatedAt: now.toISOString(),
       // NFR-OFF-05: the device purges the cache at the end of its window.
@@ -202,6 +206,7 @@ export class PassService {
         totpSecret: toBase64Url(this.totpSecret(p.pass_id)),
         pinHash: pinHash(salt, p.lot_id, this.decryptPin(p.pin_ciphertext)),
         onSite: p.on_site,
+        exited: p.exited,
       })),
     };
   }

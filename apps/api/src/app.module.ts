@@ -15,6 +15,7 @@ import { GateController } from "./gate/gate.controller.js";
 import { GateAuthService } from "./gate/gate-auth.service.js";
 import { GateSyncService } from "./gate/gate-sync.service.js";
 import { AttendantGuard } from "./gate/attendant.guard.js";
+import { DriverController } from "./driver/driver.controller.js";
 
 export interface AppOverrides { clock?: Clock; sms?: SmsSender }
 
@@ -29,7 +30,7 @@ export class AppModule {
       module: AppModule,
       imports: [DbModule],
       global: true,
-      controllers: [AuthController, RegistrationController, ReservationsController, PassesController, GateController],
+      controllers: [AuthController, RegistrationController, ReservationsController, PassesController, GateController, DriverController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: CLOCK, useValue: overrides.clock ?? systemClock },

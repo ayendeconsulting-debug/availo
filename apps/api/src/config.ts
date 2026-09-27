@@ -15,6 +15,13 @@ export interface AppConfig {
   readonly passMasterKey: Uint8Array;
   /** Where the driver app lives, for links in SMS and email. */
   readonly appBaseUrl: string;
+  /** Browser origins allowed to call the API: the driver and gate apps. */
+  readonly corsOrigins: string[];
+  /**
+   * Test seam for end-to-end runs: the server's clock starts at this instant and
+   * runs forward in real time. Refused in production.
+   */
+  readonly clockStart: Date | null;
 }
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
@@ -44,10 +51,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     passKeyId: Number(env.PASS_KEY_ID ?? 1),
     passMasterKey: hex32("PASS_MASTER_KEY", required("PASS_MASTER_KEY", "22".repeat(32))),
     appBaseUrl: required("APP_BASE_URL", "http://localhost:5173"),
+    corsOrigins: (env.CORS_ORIGINS ?? (mode === "production" ? "" : "http://localhost:5173,http://localhost:5174,http://localhost:4173,http://localhost:4174"))
+      .split(",").map((s) => s.trim()).filter(Boolean),
+    clockStart: clockStart(env.AVAILO_CLOCK_START, mode),
   };
 }
 
 function hex32(name: string, value: string): Uint8Array {
   if (!/^[0-9a-fA-F]{64}$/.test(value)) throw new Error(`${name} must be 32 bytes of hex`);
   return Uint8Array.from(value.match(/../g)!, (x) => parseInt(x, 16));
+}
+
+function clockStart(value: string | undefined, mode: AppConfig["env"]): Date | null {
+  if (!value) return null;
+  if (mode === "production") throw new Error("AVAILO_CLOCK_START is not allowed in production");
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) throw new Error("AVAILO_CLOCK_START must be an ISO 8601 date-time");
+  return d;
 }

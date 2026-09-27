@@ -13,7 +13,9 @@ import { GateAuthService } from "../gate/gate-auth.service.js";
 const [area, action, ...args] = process.argv.slice(2);
 const config = loadConfig();
 const pool = new pg.Pool({ connectionString: config.databaseUrl });
-const gate = new GateAuthService(config, pool, systemClock);
+const boot = Date.now();
+const clock = config.clockStart ? { now: () => new Date(config.clockStart!.getTime() + (Date.now() - boot)) } : systemClock;
+const gate = new GateAuthService(config, pool, clock);
 const actor = `cli:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
 
 try {

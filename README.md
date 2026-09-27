@@ -10,6 +10,10 @@ project's High-Level Requirements; cite their identifiers (US-, NFR-, DE-, OD-) 
 - `packages/shared` — rules shared by server and clients: mobile and plate normalisation.
 - `packages/pass` — the pass: signed QR, rotating code, offline verification. Runs in the browser and on the server.
 - `packages/gate-client` — the attendant device's offline core: encrypted cache, durable outbound queue, sync.
+- `packages/ui` — the prototype's "Road marking" design as React components; fonts bundled for offline use.
+- `apps/web` — the driver PWA: sign up or in, reserve, the pass (works offline).
+- `apps/gate` — the attendant PWA: enrol, scan, PIN, plate search, entry and exit, offline queue and sync.
+- `e2e` — the browser test that runs the gate with the network genuinely off.
 - `apps/api` — NestJS API: OTP sign-in, registration, availability, reservation, passes, gate.
 - `docs/decisions.md` — build decisions the requirements leave to implementation.
 
@@ -45,3 +49,25 @@ pnpm gate:admin device add <lotId> "Gate phone 1"     # prints a one-time enrolm
 ```
 
 The attendant enters the code on their phone once, then signs in by OTP.
+
+## Running the apps
+
+```sh
+pnpm --filter @availo/api dev        # :3000
+pnpm --filter @availo/web dev        # :5173 driver app
+pnpm --filter @availo/gate dev       # :5174 gate app
+```
+
+`VITE_API_URL` points either app at another API. `VITE_OPS_PHONE` gives the gate app a number for "Call operations".
+
+## The offline browser test
+
+Needs Postgres, ffmpeg and Chromium.
+
+```sh
+pnpm e2e                                              # uses Playwright's Chromium
+PW_CHROMIUM_PATH=/path/to/chrome pnpm e2e             # or a Chromium you already have
+E2E_SCREENSHOTS=./screens pnpm e2e                    # and keep screen captures
+```
+
+It builds both apps, books through the driver app, sets up a gate phone, then takes the gate browser offline, stops the API and the gate app's web server, reloads the gate app from its service worker, feeds its camera a capture of the driver's pass, admits and releases the car, restarts everything and checks the records arrived once. The API's clock is started at a fixed time for this run through `AVAILO_CLOCK_START`, which the API refuses in production.

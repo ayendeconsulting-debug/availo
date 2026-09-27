@@ -389,3 +389,38 @@ describe("Pass issue and offline verification (US-033 to US-039, OD-13)", () => 
     expect(rows[0].d).toBe(rows[0].n);
   });
 });
+
+describe("Ledger read (handover §7 item 11, US-019, US-020)", () => {
+  it("shows reservations, debits and a balance that agree, each entry with its running balance", async () => {
+    const token = await signInSeeded(0);
+    const auth = { Authorization: `Bearer ${token}` };
+    const a = await http().post("/reservations").set(auth)
+      .send({ lotId: seeded.lotId, vehicleId: seeded.users[0]!.vehicleId, start: "2030-01-02T09:00:00+01:00", hours: 2 }).expect(201);
+    const b = await http().post("/reservations").set(auth)
+      .send({ lotId: seeded.lotId, vehicleId: seeded.users[0]!.vehicleId, start: "2030-01-03T09:00:00+01:00", hours: 3 }).expect(201);
+
+    const w = (await http().get("/wallet").set(auth).expect(200)).body;
+    expect(w.balanceKobo).toBe(String(500_000 - 100_000 - 150_000));
+    expect(w.entries.map((e: { type: string; amountKobo: string; balanceAfterKobo: string }) => [e.type, e.amountKobo, e.balanceAfterKobo])).toEqual([
+      ["reservation_debit", "-150000", "250000"],
+      ["reservation_debit", "-100000", "400000"],
+      ["allocation", "500000", "500000"],
+    ]);
+    // Each reservation is paid by exactly the debit it points to.
+    const debitIds = w.entries.filter((e: { type: string }) => e.type === "reservation_debit").map((e: { id: string }) => e.id).sort();
+    expect([a.body.walletEntryId, b.body.walletEntryId].sort()).toEqual(debitIds);
+    const me = (await http().get("/me").set(auth).expect(200)).body;
+    expect(me.walletBalanceKobo).toBe(w.balanceKobo);
+
+    const list = (await http().get("/reservations").set(auth).expect(200)).body;
+    expect(list.map((r: { reference: string; upcoming: boolean }) => [r.reference, r.upcoming])).toEqual([[a.body.reference, true], [b.body.reference, true]]);
+  });
+
+  it("lists lots with their pools, assuming nothing about there being one", async () => {
+    const token = await signInSeeded(0);
+    const lots = (await http().get("/lots").set("Authorization", `Bearer ${token}`).expect(200)).body;
+    expect(lots).toHaveLength(1);
+    expect(lots[0]).toMatchObject({ id: seeded.lotId, name: "UNILAG Pilot Lot", earlyEntryMinutes: 15 });
+    expect(lots[0].pools).toEqual([{ kind: "campus", capacity: 12 }, { kind: "open", capacity: 6 }, { kind: "accessible", capacity: 2 }]);
+  });
+});

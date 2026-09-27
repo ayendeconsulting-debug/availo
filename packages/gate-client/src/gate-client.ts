@@ -5,6 +5,7 @@ import type { GateStore } from "./store.js";
 /** The cache as the server sends it (GET /gate/cache). */
 export interface CacheDocument {
   lotId: string;
+  lotName?: string;
   pinSalt: string;
   generatedAt: string;
   validUntil: string;
@@ -59,6 +60,20 @@ export class GateClient {
     private readonly now: () => Date = () => new Date(),
     private readonly newId: () => string = () => crypto.randomUUID(),
   ) {}
+
+  /** The cache in use, for the home screen's counts. Null when there is none. */
+  get current(): CacheDocument | null {
+    return this.raw;
+  }
+
+  onSite(): Promise<Map<string, string>> {
+    return this.store.onSite();
+  }
+
+  /** Passes this device has recorded an entry or exit for that the server has not seen yet. */
+  async touched(): Promise<Set<string>> {
+    return new Set((await this.store.peek<GateEvent>(10_000)).map((q) => q.event.passId).filter((x): x is string => !!x));
+  }
 
   get isOnline(): boolean {
     return this.online;

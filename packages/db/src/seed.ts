@@ -9,7 +9,7 @@ import pg from "pg";
  */
 export const SEED = {
   property: "University of Lagos",
-  lot: "Pilot lot",
+  lot: "UNILAG Pilot Lot",
   pools: { campus: 12, open: 6, accessible: 2 },
   placeholderRateKobo: 50_000n, // ₦500/hour — PLACEHOLDER pending OD-04
   drivers: [

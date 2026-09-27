@@ -26,6 +26,8 @@ export interface GatePassEntry {
   readonly pinHash: string;
   /** The server's view when the cache was built: an entry is recorded and no exit yet. */
   readonly onSite?: boolean;
+  /** The vehicle has already been in and out on this booking. */
+  readonly exited?: boolean;
 }
 
 export interface GateCache {
