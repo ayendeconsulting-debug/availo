@@ -9,6 +9,7 @@ import { ApiError } from "../common/errors.js";
 import { validate } from "../common/validate.js";
 import { AuthGuard, CurrentUser } from "../auth/auth.guard.js";
 import type { AccessClaims } from "../auth/tokens.service.js";
+import { PassService } from "../passes/pass.service.js";
 
 const Start = z.iso.datetime({ offset: true, message: "Give the start as an ISO 8601 date-time, e.g. 2026-10-01T09:00:00+01:00." }).transform((s) => new Date(s));
 const Hours = z.coerce.number().int("Hours must be a whole number.").min(1);
@@ -36,6 +37,7 @@ export class ReservationsController {
     @Inject(RESERVATION_STORE) private readonly store: ReservationStore,
     @Inject(PG_POOL) private readonly pool: pg.Pool,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(PassService) private readonly passes: PassService,
   ) {}
 
   /** US-022: the capacity this driver can actually book, and what it would cost against their balance. */
@@ -108,6 +110,13 @@ export class ReservationsController {
       }
       throw new ApiError(status, result.reason, message, detail);
     }
+    // US-033: a pass on confirmation. If this step fails the booking stands and GET …/pass issues it.
+    try {
+      const issued = await this.passes.issue(result.reservationId);
+      if (issued.created) await this.passes.sendCopy(result.reservationId);
+    } catch {
+      /* issued lazily on first read */
+    }
     return this.findById(auth.userId, result.reservationId);
   }
 
@@ -129,11 +138,12 @@ export class ReservationsController {
   private async load(where: string, params: unknown[]) {
     const { rows: [r] } = await this.pool.query<{
       id: string; reference: string; lot_id: string; kind: string; s: Date; e: Date; hours: number;
-      rate_applied_kobo: string; amount_kobo: string; wallet_entry_id: string; status: string; plate: string;
+      rate_applied_kobo: string; amount_kobo: string; wallet_entry_id: string; status: string; plate: string; pass_id: string | null;
     }>(
       `SELECT r.id, r.reference, r.lot_id, p.kind::text, lower(r.time_window) AS s, upper(r.time_window) AS e, r.hours,
-              r.rate_applied_kobo::text, r.amount_kobo::text, r.wallet_entry_id, r.status::text, v.plate_normalised AS plate
+              r.rate_applied_kobo::text, r.amount_kobo::text, r.wallet_entry_id, r.status::text, v.plate_normalised AS plate, ap.id AS pass_id
          FROM reservation r JOIN capacity_pool p ON p.id = r.pool_id JOIN vehicle v ON v.id = r.vehicle_id
+         LEFT JOIN access_pass ap ON ap.reservation_id = r.id
         WHERE r.user_id = $1 AND ${where}`,
       params,
     );
@@ -142,6 +152,7 @@ export class ReservationsController {
       id: r.id, reference: r.reference, lotId: r.lot_id, pool: r.kind, status: r.status, plate: r.plate,
       window: { start: r.s.toISOString(), end: r.e.toISOString() }, hours: r.hours,
       rateAppliedKobo: r.rate_applied_kobo, amountKobo: r.amount_kobo, walletEntryId: r.wallet_entry_id,
+      passId: r.pass_id,
     };
   }
 }

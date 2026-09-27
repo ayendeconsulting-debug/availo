@@ -20,4 +20,14 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // The pass package runs on the driver's phone and the attendant's device as well as the server.
+    files: ["packages/pass/src/**/*.ts", "packages/shared/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { patterns: [{ group: ["node:*", "fs", "path", "http", "https", "net", "crypto", "pg", "@nestjs/*"], message: "Browser-safe package: no Node or server imports." }] },
+      ],
+    },
+  },
 );

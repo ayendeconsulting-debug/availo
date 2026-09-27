@@ -9,6 +9,8 @@ import { OtpService } from "./auth/otp.service.js";
 import { TokensService } from "./auth/tokens.service.js";
 import { RegistrationController } from "./registration/registration.controller.js";
 import { ReservationsController } from "./reservations/reservations.controller.js";
+import { PassService } from "./passes/pass.service.js";
+import { PassesController } from "./passes/passes.controller.js";
 
 export interface AppOverrides { clock?: Clock; sms?: SmsSender }
 
@@ -23,7 +25,7 @@ export class AppModule {
       module: AppModule,
       imports: [DbModule],
       global: true,
-      controllers: [AuthController, RegistrationController, ReservationsController],
+      controllers: [AuthController, RegistrationController, ReservationsController, PassesController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: CLOCK, useValue: overrides.clock ?? systemClock },
@@ -31,6 +33,7 @@ export class AppModule {
         OtpService,
         TokensService,
         AuthGuard,
+        PassService,
       ],
       exports: [APP_CONFIG, CLOCK],
     };

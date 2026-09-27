@@ -13,6 +13,8 @@ import { migrate, seed, SEED, type SeedResult } from "@availo/db";
 import { AppModule } from "../src/app.module.js";
 import { loadConfig } from "../src/config.js";
 import { DevSmsSender } from "../src/sms/sms.js";
+import { PassService } from "../src/passes/pass.service.js";
+import { fromBase64Url, qrText, verifyPin, verifyQr, type GateCache } from "@availo/pass";
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://postgres@localhost:5432/availo_test";
 const T0 = new Date("2029-12-31T12:00:00Z");
@@ -275,5 +277,115 @@ describe("Availability and reservation over HTTP (US-022, US-023, US-133, §4.13
     const r = await http().post("/reservations").set("Authorization", `Bearer ${token}`)
       .send({ lotId: seeded.lotId, vehicleId: seeded.users[0]!.vehicleId, start: "2029-12-31T08:00:00Z", hours: 1 }).expect(422);
     expect(r.body.error.code).toBe("INVALID_WINDOW");
+  });
+});
+
+describe("Pass issue and offline verification (US-033 to US-039, OD-13)", () => {
+  async function bookAndGetPass() {
+    const token = await signInSeeded(0);
+    const auth = { Authorization: `Bearer ${token}` };
+    const booking = await http().post("/reservations").set(auth)
+      .send({ lotId: seeded.lotId, vehicleId: seeded.users[0]!.vehicleId, start: TOMORROW_9, hours: 3 }).expect(201);
+    const pass = await http().get(`/reservations/${booking.body.id}/pass`).set(auth).expect(200);
+    return { auth, booking: booking.body, pass: pass.body };
+  }
+
+  async function deviceCache(): Promise<GateCache> {
+    // Round-trip through JSON: exactly what an attendant device would receive and store.
+    const raw = JSON.parse(JSON.stringify(await app.get(PassService).gateCache(seeded.lotId)));
+    return {
+      lotId: raw.lotId, pinSalt: raw.pinSalt,
+      publicKeys: new Map(raw.publicKeys.map((k: { keyId: number; publicKey: string }) => [k.keyId, fromBase64Url(k.publicKey)!])),
+      passes: new Map(raw.passes.map((p: { passId: string }) => [p.passId, p])),
+    };
+  }
+
+  it("issues a pass on confirmation with a 6-digit PIN, and texts reference, window, plate, PIN and link — never a QR", async () => {
+    const { booking, pass } = await bookAndGetPass();
+    expect(booking.passId).toBe(pass.passId);
+    expect(pass).toMatchObject({
+      reference: booking.reference, plate: "LND123AB", driverName: SEED.drivers[0].name, earlyEntryMinutes: 15, accessible: false,
+      window: { start: "2030-01-01T08:00:00.000Z", end: "2030-01-01T11:00:00.000Z" }, status: "confirmed",
+    });
+    expect(pass.pin).toMatch(/^\d{6}$/);
+    expect(pass.qr.signedPart).toMatch(/^AV1:/);
+
+    const text = sms.outbox.filter((m) => m.purpose === "pass");
+    expect(text).toHaveLength(1);
+    expect(text[0]!.body).toContain(booking.reference);
+    expect(text[0]!.body).toContain(`PIN ${pass.pin}`);
+    expect(text[0]!.body).toContain("09:00–12:00 WAT");
+    expect(text[0]!.body).toContain("LND123AB");
+    expect(text[0]!.body).not.toContain("AV1:");
+  });
+
+  it("returns the same pass and PIN on every read, and keeps the PIN encrypted at rest", async () => {
+    const { auth, booking, pass } = await bookAndGetPass();
+    const again = await http().get(`/reservations/${booking.id}/pass`).set(auth).expect(200);
+    expect(again.body.pin).toBe(pass.pin);
+    const { rows } = await pool.query("SELECT pin_lookup, pin_ciphertext, signed_part FROM access_pass");
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows)).not.toContain(pass.pin);
+  });
+
+  it("does not show one driver another driver's pass", async () => {
+    const { booking } = await bookAndGetPass();
+    const other = await signInSeeded(1);
+    await http().get(`/reservations/${booking.id}/pass`).set("Authorization", `Bearer ${other}`).expect(404);
+  });
+
+  it("verifies at an offline gate: VALID from 15 minutes early, STALE_CODE for an old screenshot, PIN fallback", async () => {
+    const { pass } = await bookAndGetPass();
+    const cache = await deviceCache(); // fetched while online; everything below is offline
+    const secret = fromBase64Url(pass.qr.totpSecret)!;
+
+    const arrive = new Date("2030-01-01T07:50:00Z"); // 08:50 WAT, ten minutes early
+    const scan = verifyQr(qrText(pass.qr.signedPart, secret, arrive), cache, arrive);
+    expect(scan).toEqual({
+      status: "VALID", method: "qr",
+      pass: { passId: pass.passId, reference: pass.reference, driverName: SEED.drivers[0].name, plate: "LND123AB", start: pass.window.start, end: pass.window.end, accessible: false },
+    });
+
+    const tooEarly = new Date("2030-01-01T07:40:00Z");
+    expect(verifyQr(qrText(pass.qr.signedPart, secret, tooEarly), cache, tooEarly).status).toBe("NOT_YET_DUE");
+
+    const screenshot = qrText(pass.qr.signedPart, secret, arrive);
+    expect(verifyQr(screenshot, cache, new Date("2030-01-01T08:00:00Z")).status).toBe("STALE_CODE");
+
+    expect(verifyPin(pass.pin, cache, arrive)).toMatchObject({ status: "VALID", method: "pin", pass: { plate: "LND123AB" } });
+  });
+
+  it("gives the gate device only name, plate, window and accessible indicator — no contact or money (NFR-PRI-01)", async () => {
+    await bookAndGetPass();
+    const raw = JSON.stringify(await app.get(PassService).gateCache(seeded.lotId));
+    expect(raw).not.toContain(SEED.drivers[0].mobile);
+    expect(raw).not.toMatch(/kobo|balance|email|mobile/i);
+  });
+
+  it("publishes the verification key, and it verifies a real pass", async () => {
+    const { pass } = await bookAndGetPass();
+    const keys = await http().get("/pass-keys").expect(200);
+    expect(keys.body.keys).toHaveLength(1);
+    const cache = await deviceCache();
+    expect([...cache.publicKeys.keys()]).toEqual([keys.body.keys[0].keyId]);
+    const now = new Date("2030-01-01T09:00:00Z");
+    expect(verifyQr(qrText(pass.qr.signedPart, fromBase64Url(pass.qr.totpSecret)!, now), cache, now).status).toBe("VALID");
+  });
+
+  it("allocates distinct PINs across every live pass at the lot", async () => {
+    const tokens = await Promise.all([0, 1, 2].map((i) => signInSeeded(i)));
+    const pins = new Set<string>();
+    for (let slot = 0; slot < 3; slot++) {
+      for (const [i, t] of tokens.entries()) {
+        const b = await http().post("/reservations").set("Authorization", `Bearer ${t}`)
+          .send({ lotId: seeded.lotId, vehicleId: seeded.users[i]!.vehicleId, start: `2030-01-0${2 + slot}T09:00:00+01:00`, hours: 1 });
+        if (b.status !== 201) continue; // the smallest wallet runs out; that is fine here
+        const p = await http().get(`/reservations/${b.body.id}/pass`).set("Authorization", `Bearer ${t}`).expect(200);
+        pins.add(p.body.pin);
+      }
+    }
+    const { rows } = await pool.query("SELECT count(*)::int AS n, count(DISTINCT pin_lookup)::int AS d FROM access_pass");
+    expect(rows[0].n).toBe(pins.size);
+    expect(rows[0].d).toBe(rows[0].n);
   });
 });
