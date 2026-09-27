@@ -35,9 +35,6 @@ importers:
       '@availo/engine':
         specifier: workspace:*
         version: link:../../packages/engine
-      '@availo/pass':
-        specifier: workspace:*
-        version: link:../../packages/pass
       '@availo/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -66,6 +63,12 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@availo/gate-client':
+        specifier: workspace:*
+        version: link:../../packages/gate-client
+      '@availo/pass':
+        specifier: workspace:*
+        version: link:../../packages/pass
       '@nestjs/testing':
         specifier: ^11.2.6
         version: 11.2.6(@nestjs/common@11.2.6(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.6)(@nestjs/platform-express@11.2.6)
@@ -78,6 +81,9 @@ importers:
       '@types/supertest':
         specifier: ^7.2.1
         version: 7.2.1
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
       supertest:
         specifier: ^7.3.0
         version: 7.3.0
@@ -96,6 +102,22 @@ importers:
         version: 8.23.1
 
   packages/engine: {}
+
+  packages/gate-client:
+    dependencies:
+      '@availo/pass':
+        specifier: workspace:*
+        version: link:../pass
+      '@availo/shared':
+        specifier: workspace:*
+        version: link:../shared
+      idb:
+        specifier: ^8.0.3
+        version: 8.0.3
+    devDependencies:
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
 
   packages/pass:
     dependencies:
@@ -878,6 +900,10 @@ packages:
     resolution: {integrity: sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==}
     engines: {node: '>= 18'}
 
+  fake-indexeddb@6.2.5:
+    resolution: {integrity: sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==}
+    engines: {node: '>=18'}
+
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
@@ -989,6 +1015,9 @@ packages:
   iconv-lite@0.7.3:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
     engines: {node: '>=0.10.0'}
+
+  idb@8.0.3:
+    resolution: {integrity: sha512-LtwtVyVYO5BqRvcsKuB2iUMnHwPVByPCXFXOpuU96IZPPoPN6xjOGxZQ74pgSVVLQWtUOYgyeL4GE98BY5D3wg==}
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
@@ -2342,6 +2371,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  fake-indexeddb@6.2.5: {}
+
   fast-deep-equal@3.1.3: {}
 
   fast-json-stable-stringify@2.1.0: {}
@@ -2467,6 +2498,8 @@ snapshots:
   iconv-lite@0.7.3:
     dependencies:
       safer-buffer: 2.1.2
+
+  idb@8.0.3: {}
 
   ieee754@1.2.1: {}
 

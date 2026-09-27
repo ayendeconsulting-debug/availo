@@ -11,6 +11,10 @@ import { RegistrationController } from "./registration/registration.controller.j
 import { ReservationsController } from "./reservations/reservations.controller.js";
 import { PassService } from "./passes/pass.service.js";
 import { PassesController } from "./passes/passes.controller.js";
+import { GateController } from "./gate/gate.controller.js";
+import { GateAuthService } from "./gate/gate-auth.service.js";
+import { GateSyncService } from "./gate/gate-sync.service.js";
+import { AttendantGuard } from "./gate/attendant.guard.js";
 
 export interface AppOverrides { clock?: Clock; sms?: SmsSender }
 
@@ -25,7 +29,7 @@ export class AppModule {
       module: AppModule,
       imports: [DbModule],
       global: true,
-      controllers: [AuthController, RegistrationController, ReservationsController, PassesController],
+      controllers: [AuthController, RegistrationController, ReservationsController, PassesController, GateController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: CLOCK, useValue: overrides.clock ?? systemClock },
@@ -34,6 +38,9 @@ export class AppModule {
         TokensService,
         AuthGuard,
         PassService,
+        GateAuthService,
+        GateSyncService,
+        AttendantGuard,
       ],
       exports: [APP_CONFIG, CLOCK],
     };

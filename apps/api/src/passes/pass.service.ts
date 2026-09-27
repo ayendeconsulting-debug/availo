@@ -14,14 +14,15 @@ export const CACHE_HORIZON_HOURS = 24;
 interface PassRow {
   pass_id: string; reservation_id: string; reference: string; lot_id: string; lot_name: string; early_entry_minutes: number;
   s: Date; e: Date; plate: string; driver_name: string; pool_kind: string; status: string; user_id: string;
-  signed_part: string; pin_ciphertext: string; pin_lookup: string; revoked_at: Date | null;
+  signed_part: string; pin_ciphertext: string; pin_lookup: string; revoked_at: Date | null; on_site: boolean;
 }
 
 const PASS_SELECT = `
   SELECT ap.id AS pass_id, r.id AS reservation_id, r.reference, r.lot_id, l.name AS lot_name, l.early_entry_minutes,
          lower(r.time_window) AS s, upper(r.time_window) AS e, v.plate_normalised AS plate, u.display_name AS driver_name,
          cp.kind::text AS pool_kind, r.status::text AS status, r.user_id,
-         ap.signed_part, ap.pin_ciphertext, ap.pin_lookup, ap.revoked_at
+         ap.signed_part, ap.pin_ciphertext, ap.pin_lookup, ap.revoked_at,
+         EXISTS (SELECT 1 FROM parking_session ps WHERE ps.reservation_id = r.id AND ps.state = 'active') AS on_site
     FROM access_pass ap
     JOIN reservation r ON r.id = ap.reservation_id
     JOIN lot l ON l.id = r.lot_id
@@ -177,17 +178,21 @@ export class PassService {
    * pass whose window overlaps the next 24 hours. PIN hashes are salted fresh for
    * each cache so one device's cache cannot be matched against another's.
    */
-  async gateCache(lotId: string): Promise<{ lotId: string; pinSalt: string; generatedAt: string; publicKeys: Array<{ keyId: number; publicKey: string }>; passes: GatePassEntry[] }> {
+  async gateCache(lotId: string): Promise<{ lotId: string; pinSalt: string; generatedAt: string; validUntil: string; publicKeys: Array<{ keyId: number; publicKey: string }>; passes: GatePassEntry[] }> {
     const now = this.clock.now();
     const until = new Date(now.getTime() + CACHE_HORIZON_HOURS * 3_600_000);
     const rows = await this.loadAll(
-      "r.lot_id = $1 AND upper(r.time_window) > $2 AND lower(r.time_window) < $3 AND r.status IN ('confirmed', 'cancelled')",
+      `r.lot_id = $1 AND r.status IN ('confirmed', 'cancelled')
+        AND ((upper(r.time_window) > $2 AND lower(r.time_window) < $3)
+             OR EXISTS (SELECT 1 FROM parking_session ps WHERE ps.reservation_id = r.id AND ps.state = 'active'))`,
       [lotId, now, until]);
     const salt = randomBytes(16);
     return {
       lotId,
       pinSalt: toBase64Url(salt),
       generatedAt: now.toISOString(),
+      // NFR-OFF-05: the device purges the cache at the end of its window.
+      validUntil: until.toISOString(),
       publicKeys: this.publicKeys(),
       passes: rows.map((p) => ({
         passId: p.pass_id, lotId: p.lot_id, reference: p.reference, driverName: p.driver_name, plate: p.plate,
@@ -196,6 +201,7 @@ export class PassService {
         status: p.status === "confirmed" && !p.revoked_at ? "active" : "cancelled",
         totpSecret: toBase64Url(this.totpSecret(p.pass_id)),
         pinHash: pinHash(salt, p.lot_id, this.decryptPin(p.pin_ciphertext)),
+        onSite: p.on_site,
       })),
     };
   }

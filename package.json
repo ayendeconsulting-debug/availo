@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:capacity": "vitest run packages/db/test/us-023",
     "db:migrate": "tsx packages/db/src/migrate.ts",
-    "db:seed": "tsx packages/db/src/seed.ts"
+    "db:seed": "tsx packages/db/src/seed.ts",
+    "gate:admin": "tsx apps/api/src/cli/gate-admin.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

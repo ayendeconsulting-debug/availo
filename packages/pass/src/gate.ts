@@ -24,6 +24,8 @@ export interface GatePassEntry {
   readonly totpSecret: string;
   /** base64url HMAC-SHA-256(cacheSalt, lotId:pin). Salted per cache issue. */
   readonly pinHash: string;
+  /** The server's view when the cache was built: an entry is recorded and no exit yet. */
+  readonly onSite?: boolean;
 }
 
 export interface GateCache {
@@ -41,10 +43,12 @@ export interface GateCache {
  */
 export type GateStatus = "VALID" | "NOT_YET_DUE" | "EXPIRED" | "CANCELLED" | "WRONG_LOT" | "NOT_FOUND" | "STALE_CODE";
 
+export type GateMethod = "qr" | "pin" | "plate";
+
 export type GateResult =
-  | { status: "VALID"; method: "qr" | "pin"; pass: GateView }
-  | { status: Exclude<GateStatus, "VALID" | "NOT_FOUND" | "WRONG_LOT">; method: "qr" | "pin"; pass: GateView }
-  | { status: "NOT_FOUND" | "WRONG_LOT"; method: "qr" | "pin" };
+  | { status: "VALID"; method: GateMethod; pass: GateView }
+  | { status: Exclude<GateStatus, "VALID" | "NOT_FOUND" | "WRONG_LOT">; method: GateMethod; pass: GateView }
+  | { status: "NOT_FOUND" | "WRONG_LOT"; method: GateMethod };
 
 /** What the attendant is shown. Nothing else leaves the cache. */
 export interface GateView {
@@ -70,6 +74,12 @@ function timeStatus(e: GatePassEntry, now: Date): "VALID" | "NOT_YET_DUE" | "EXP
   if (t < Date.parse(e.start) - e.earlyEntryMinutes * 60_000) return "NOT_YET_DUE";
   if (t >= Date.parse(e.end)) return "EXPIRED";
   return "VALID";
+}
+
+/** Status of a cached pass found by PIN or plate: cancellation and time only. The rotating code applies to scans. */
+export function resolveEntry(e: GatePassEntry, now: Date, method: GateMethod): GateResult {
+  if (e.status === "cancelled") return { status: "CANCELLED", method, pass: view(e) };
+  return { status: timeStatus(e, now), method, pass: view(e) };
 }
 
 /** Verify a scanned QR entirely from the device cache — no network (US-034, US-042, NFR-PER-02). */

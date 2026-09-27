@@ -22,7 +22,7 @@ export default tseslint.config(
   },
   {
     // The pass package runs on the driver's phone and the attendant's device as well as the server.
-    files: ["packages/pass/src/**/*.ts", "packages/shared/src/**/*.ts"],
+    files: ["packages/pass/src/**/*.ts", "packages/shared/src/**/*.ts", "packages/gate-client/src/**/*.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
