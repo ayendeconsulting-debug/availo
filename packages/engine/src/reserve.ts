@@ -62,6 +62,7 @@ export async function reserve(store: ReservationStore, req: ReserveRequest): Pro
       rateAppliedKobo: rate,
       amountKobo: amount,
       walletEntryId,
+      ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
     });
 
     return {

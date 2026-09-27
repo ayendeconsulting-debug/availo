@@ -47,6 +47,8 @@ export interface ReserveRequest {
   readonly hours: number;
   /** The driver asks for accessible capacity (US-024). Eligibility is checked server-side regardless. */
   readonly accessible?: boolean;
+  /** A client retry carrying the same key returns the original booking rather than making a second. */
+  readonly idempotencyKey?: string;
   /** The engine's notion of "now" — injected so the engine stays pure and testable. */
   readonly now: Date;
 }

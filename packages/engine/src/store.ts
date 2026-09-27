@@ -49,5 +49,6 @@ export interface ReservationTx {
     rateAppliedKobo: bigint;
     amountKobo: bigint;
     walletEntryId: string;
+    idempotencyKey?: string;
   }): Promise<string>;
 }

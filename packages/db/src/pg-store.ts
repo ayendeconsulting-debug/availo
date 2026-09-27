@@ -113,10 +113,10 @@ function pgTx(c: pg.PoolClient): ReservationTx {
     async insertReservation(r) {
       const { rows } = await c.query<{ id: string }>(
         `INSERT INTO reservation (reference, user_id, vehicle_id, lot_id, pool_id, time_window, hours,
-                                  tariff_id, rate_applied_kobo, amount_kobo, wallet_entry_id)
-         VALUES ($1, $2, $3, $4, $5, tstzrange($6, $7, '[)'), $8, $9, $10, $11, $12) RETURNING id`,
+                                  tariff_id, rate_applied_kobo, amount_kobo, wallet_entry_id, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, tstzrange($6, $7, '[)'), $8, $9, $10, $11, $12, $13) RETURNING id`,
         [r.reference, r.userId, r.vehicleId, r.lotId, r.poolId, r.window.start, r.window.end, r.hours,
-         r.tariffId, r.rateAppliedKobo.toString(), r.amountKobo.toString(), r.walletEntryId],
+         r.tariffId, r.rateAppliedKobo.toString(), r.amountKobo.toString(), r.walletEntryId, r.idempotencyKey ?? null],
       );
       return rows[0]!.id;
     },
