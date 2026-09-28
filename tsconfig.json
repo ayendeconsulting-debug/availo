@@ -25,6 +25,7 @@
     "packages/*/test",
     "apps/*/src",
     "apps/*/test",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "apps/*/scripts"
   ]
 }

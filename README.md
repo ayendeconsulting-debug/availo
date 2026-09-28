@@ -71,3 +71,12 @@ E2E_SCREENSHOTS=./screens pnpm e2e                    # and keep screen captures
 ```
 
 It builds both apps, books through the driver app, sets up a gate phone, then takes the gate browser offline, stops the API and the gate app's web server, reloads the gate app from its service worker, feeds its camera a capture of the driver's pass, admits and releases the car, restarts everything and checks the records arrived once. The API's clock is started at a fixed time for this run through `AVAILO_CLOCK_START`, which the API refuses in production.
+
+## The sprint 1 demo
+
+```sh
+pnpm demo                 # ten consecutive runs; exits non-zero on any failure
+DEMO_RUNS=50 pnpm demo    # more
+```
+
+Each run registers a staff member by OTP, seeds their wallet, reserves one hour, fetches the pass, has a gate device verify it and record entry with the network cut, syncs, records exit offline, syncs again, resends the same records, and checks that the reservation, the ledger, the balance, occupancy and the capacity cap all agree. It uses its own database, `availo_demo`, rebuilt on every start.

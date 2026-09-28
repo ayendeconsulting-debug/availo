@@ -13,7 +13,8 @@
     "db:migrate": "tsx packages/db/src/migrate.ts",
     "db:seed": "tsx packages/db/src/seed.ts",
     "gate:admin": "tsx apps/api/src/cli/gate-admin.ts",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "demo": "tsx apps/api/scripts/demo.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

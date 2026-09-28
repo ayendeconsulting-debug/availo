@@ -35,6 +35,11 @@ jobs:
       - name: US-023 capacity-boundary concurrency test (release gate)
         run: pnpm test:capacity
       - run: pnpm test
+      # Handover §7 "done when": the walking skeleton end to end, ten consecutive times.
+      - name: Sprint 1 headless demo (10 consecutive runs)
+        run: pnpm demo
+        env:
+          DEMO_PG_URL: postgres://postgres:postgres@localhost:5432
 
   # Handover §7 "done when": the offline gate path works with the network genuinely off.
   e2e:
