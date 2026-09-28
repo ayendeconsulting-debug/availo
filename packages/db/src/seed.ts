@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import pg from "pg";
 
 /**
@@ -65,7 +66,8 @@ export async function seed(client: pg.ClientBase): Promise<SeedResult> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run directly (pnpm db:…). pathToFileURL keeps this true on Windows paths too.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   try {

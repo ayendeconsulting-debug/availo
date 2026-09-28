@@ -1,5 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import pg from "pg";
 
@@ -31,7 +31,8 @@ export async function migrate(client: pg.ClientBase): Promise<string[]> {
   return ran;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run directly (pnpm db:…). pathToFileURL keeps this true on Windows paths too.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   try {
