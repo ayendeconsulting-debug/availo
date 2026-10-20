@@ -4,9 +4,11 @@ import { PaymentsService } from "./payments.service.js";
 
 const SWEEP_EVERY_MS = 30_000;
 const REFUND_EVERY_MS = 60_000;
+const RECHECK_EVERY_MS = 5 * 60_000;
 
 /**
- * The payment jobs: close lapsed holds and submit queued refunds. Each is safe
+ * The payment jobs: close lapsed holds, submit queued refunds, and ask the
+ * provider again about recent unpaid payments in case a webhook was lost. Each is safe
  * to run concurrently on several API instances: holds are released by a guarded
  * UPDATE and refunds are claimed before they are submitted.
  *
@@ -27,6 +29,7 @@ export class PaymentJobs implements OnModuleInit, OnApplicationShutdown {
     if (!this.config.payments.runJobs) return;
     this.timers.push(setInterval(() => this.run("sweep", () => this.payments.sweepExpired()), SWEEP_EVERY_MS).unref());
     this.timers.push(setInterval(() => this.run("refunds", () => this.payments.submitRefunds()), REFUND_EVERY_MS).unref());
+    this.timers.push(setInterval(() => this.run("recheck", () => this.payments.recheckRecent()), RECHECK_EVERY_MS).unref());
   }
 
   onApplicationShutdown() {

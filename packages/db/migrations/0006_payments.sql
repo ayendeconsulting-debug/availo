@@ -58,6 +58,7 @@ CREATE TABLE payment_transaction (
   provider_fee_kobo  bigint,                                     -- for reconciliation (US-068)
   paid_at            timestamptz,
   verified_at        timestamptz,                                -- set only by a server-side verify (US-134)
+  last_checked_at    timestamptz,                                -- last time the provider was asked about it
   authorization_url  text,
   idempotency_key    text,
   created_at         timestamptz NOT NULL DEFAULT now(),
@@ -133,7 +134,9 @@ ALTER TABLE wallet_entry ADD COLUMN allocated_kobo bigint NOT NULL DEFAULT 0;
 ALTER TABLE wallet_entry ADD COLUMN payment_transaction_id uuid REFERENCES payment_transaction(id);
 
 -- Back-fill rows written before this sprint by replaying each wallet allocated-first. Only seed and
--- development rows can exist at this point; the append-only trigger is suspended for this statement alone.
+-- development rows can exist at this point (allocations and booking debits; nothing writes refunds or
+-- reversals yet, so whatever adds them sets allocated_kobo itself). The append-only trigger is suspended
+-- for this statement alone.
 ALTER TABLE wallet_entry DISABLE TRIGGER wallet_entry_no_update;
 DO $$
 DECLARE r record; cur uuid := NULL; alloc bigint := 0; part bigint;

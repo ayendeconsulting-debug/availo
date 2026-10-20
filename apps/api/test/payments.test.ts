@@ -212,8 +212,9 @@ describe("US-134, US-135 checkout behind a hold (§4.13 steps 3–5)", () => {
     expect(await n("SELECT 1 FROM payment_ledger_entry WHERE entry_type = 'unfulfilled_payment'")).toBe(1);
     expect(await n("SELECT 1 FROM payment_ledger_entry WHERE entry_type = 'checkout_payment'")).toBe(0);
 
+    const before = sim.refunds.length;
     await payments.submitRefunds();
-    expect(sim.refunds).toHaveLength(1);
+    expect(sim.refunds.length - before).toBe(1);
     await sim.processRefunds();      // refund.processed webhook
     await sim.resendWebhooks(c.body.payment.reference);
     expect((await pool.query("SELECT status::text FROM refund")).rows).toEqual([{ status: "processed" }]);
@@ -224,13 +225,61 @@ describe("US-134, US-135 checkout behind a hold (§4.13 steps 3–5)", () => {
     expect(h.body.map((i: { kind: string; status: string }) => `${i.kind}:${i.status}`)).toEqual(["refund:processed", "checkout:refund_due"]);
   });
 
-  it("refunds a payment whose amount differs from what was asked", async () => {
+  it("refunds a payment whose amount differs from what was asked, and gives the space back at once", async () => {
     const g = await guest();
     const c = await checkout(g).expect(201);
     await sim.pay(c.body.payment.reference, { amountKobo: 100n });
     expect((await http().get(`/checkouts/${c.body.holdId}`).set(as(g))).body.state).toBe("refund_due");
     expect(await n("SELECT 1 FROM reservation")).toBe(0);
     expect((await pool.query("SELECT amount_kobo::text FROM refund")).rows).toEqual([{ amount_kobo: "100" }]);
+    expect(await openAvailable(g)).toBe(6);
+    await checkout(g, { start: "2030-01-02T10:00:00+01:00" }).expect(201); // not blocked by the refunded checkout
+  });
+
+  it("finds a payment completed after it was given up on, even when its webhook is lost", async () => {
+    const g = await guest();
+    const c = await checkout(g).expect(201);
+    clock.advance(601);
+    await payments.sweepExpired();
+    expect((await pool.query("SELECT status::text FROM payment_transaction")).rows).toEqual([{ status: "abandoned" }]);
+    await sim.pay(c.body.payment.reference, { webhook: false }); // the driver finished on Paystack's page; no webhook arrives
+    expect(await payments.recheckRecent()).toBe(0); // checked moments ago by the sweep: not asked again yet
+    clock.advance(16 * 60);
+    expect(await payments.recheckRecent()).toBe(1);
+    expect((await pool.query("SELECT status::text, fulfilment::text FROM payment_transaction")).rows).toEqual([{ status: "succeeded", fulfilment: "fulfilled" }]);
+    expect(await n("SELECT 1 FROM reservation")).toBe(1);
+  });
+
+  it("retries a refund the provider failed, and gives up loudly rather than silently", async () => {
+    const g = await guest();
+    const c = await checkout(g).expect(201);
+    await http().delete(`/checkouts/${c.body.holdId}`).set(as(g)).expect(200);
+    await sim.pay(c.body.payment.reference); // paid after cancelling: owed back
+    await payments.submitRefunds();
+    await sim.failRefunds(); // refund.failed: the money went back to the merchant balance
+    expect((await pool.query("SELECT status::text FROM refund")).rows).toEqual([{ status: "queued" }]);
+    await payments.submitRefunds();
+    await sim.processRefunds();
+    expect((await pool.query("SELECT status::text, attempts FROM refund")).rows).toEqual([{ status: "processed", attempts: 2 }]);
+    expect(await n("SELECT 1 FROM payment_ledger_entry WHERE entry_type = 'refund'")).toBe(1);
+
+    // A refund that keeps failing is marked failed for operations, not skipped for ever.
+    await pool.query("UPDATE refund SET status = 'queued', attempts = 5");
+    await payments.submitRefunds();
+    expect((await pool.query("SELECT status::text FROM refund")).rows).toEqual([{ status: "failed" }]);
+  });
+
+  it("reclaims a refund that was claimed but never sent", async () => {
+    const g = await guest();
+    const c = await checkout(g).expect(201);
+    await http().delete(`/checkouts/${c.body.holdId}`).set(as(g)).expect(200);
+    await sim.pay(c.body.payment.reference);
+    // As if the process stopped between claiming the refund and calling Paystack.
+    await pool.query("UPDATE refund SET status = 'submitted', attempts = 1, submitted_at = $1", [new Date(T0.getTime() - 20 * 60_000)]);
+    const before = sim.refunds.length;
+    await payments.submitRefunds();
+    expect(sim.refunds.length - before).toBe(1);
+    expect((await pool.query("SELECT status::text, attempts FROM refund")).rows).toEqual([{ status: "submitted", attempts: 2 }]);
   });
 
   it("cancelling returns the space at once; a payment that still lands is refunded, not booked", async () => {
@@ -330,6 +379,9 @@ describe("US-016 wallet top-up", () => {
     const r = await http().post("/top-ups").set(as(s)).send({ amountKobo: "300000" }).expect(422);
     expect(r.body.error).toMatchObject({ code: "BALANCE_LIMIT", headroomKobo: "200000" });
     expect(await n("SELECT 1 FROM payment_transaction")).toBe(0);
+    // Top-ups still open count against the limit, so two cannot together pass it.
+    await http().post("/top-ups").set(as(s)).send({ amountKobo: "150000" }).expect(201);
+    expect((await http().post("/top-ups").set(as(s)).send({ amountKobo: "100000" }).expect(422)).body.error.code).toBe("BALANCE_LIMIT");
   });
 
   it("consumes allocated credit before paid credit (OD-12), and the split shows on every debit", async () => {

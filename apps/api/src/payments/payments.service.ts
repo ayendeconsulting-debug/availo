@@ -16,6 +16,13 @@ const INITIATION_LIMIT = 5;
 const INITIATION_WINDOW_MINUTES = 10;
 /** A top-up nobody completed is closed as abandoned after this long. */
 const TOP_UP_ABANDON_MINUTES = 60;
+/** A refund is tried this many times before it is left as failed for operations to act on. */
+const MAX_REFUND_ATTEMPTS = 5;
+/** A refund claimed for submission but never sent (the process stopped) is reclaimed after this long. */
+const REFUND_STUCK_MINUTES = 15;
+/** Unpaid payments are asked about again for this long, in case a payment completed and its webhook was lost. */
+const RECHECK_HOURS = 24;
+const RECHECK_EVERY_MINUTES = 15;
 
 export interface PaymentRow {
   id: string; reference: string; user_id: string; purpose: "checkout" | "top_up"; amount_kobo: string; currency: string;
@@ -174,7 +181,9 @@ export class PaymentsService {
         minKobo: rule.minTopUpKobo.toString(), maxKobo: rule.maxTopUpKobo.toString(),
       });
     }
-    const balance = await this.balance(userId);
+    // Top-ups still open count too, so two started together cannot together pass the limit. A payment that
+    // lands anyway is credited — money received is never refused — so the limit governs what is offered.
+    const balance = (await this.balance(userId)) + (await this.pendingTopUps(userId));
     if (balance + amountKobo > rule.maxBalanceKobo) {
       throw new ApiError(HttpStatus.UNPROCESSABLE_ENTITY, "BALANCE_LIMIT", `A wallet can hold at most ${naira(rule.maxBalanceKobo)}. You can add up to ${naira(rule.maxBalanceKobo - balance > 0n ? rule.maxBalanceKobo - balance : 0n)}.`, {
         maxBalanceKobo: rule.maxBalanceKobo.toString(), headroomKobo: (rule.maxBalanceKobo - balance).toString(),
@@ -250,6 +259,7 @@ export class PaymentsService {
     const outcome = await withPgTransaction(this.pool, async (c, tx) => {
       const { rows: [p] } = await c.query<PaymentRow>("SELECT * FROM payment_transaction WHERE reference = $1 FOR UPDATE", [reference]);
       if (!p) return null;
+      await c.query("UPDATE payment_transaction SET last_checked_at = $2 WHERE id = $1", [p.id, this.clock.now()]);
       await this.event(p.id, "verified", { source, status: verified.status, amount: verified.amountKobo?.toString() ?? null, gateway: verified.gatewayResponse }, c);
 
       if (p.status === "succeeded") return this.outcomeOf(p, c); // already acted on: nothing more to do
@@ -317,7 +327,8 @@ export class PaymentsService {
         this.log.warn(`Pass for ${outcome.reservationId} deferred: ${(err as Error).message}`);
       }
     }
-    if (outcome.state === "refund_due") void this.submitRefunds().catch(() => undefined);
+    // Send the refund now rather than at the next job run. Where jobs are off (tests), callers run it themselves.
+    if (outcome.state === "refund_due" && this.config.payments.runJobs) void this.submitRefunds().catch(() => undefined);
     return outcome;
   }
 
@@ -325,6 +336,13 @@ export class PaymentsService {
   private async unfulfilled(c: pg.PoolClient, p: PaymentRow, v: VerifyResult, note: string): Promise<SettleOutcome> {
     const paid = v.amountKobo ?? BigInt(p.amount_kobo);
     await c.query("UPDATE payment_transaction SET fulfilment = 'refund_due', fulfilment_note = $2, updated_at = now() WHERE id = $1", [p.id, note]);
+    // A hold this payment was for is finished with: the space goes back now rather than at expiry.
+    if (p.hold_id) {
+      await c.query(
+        `UPDATE inventory_hold SET released_at = $2, release_reason = CASE WHEN expires_at <= $2 THEN 'expired' ELSE 'payment_failed' END
+          WHERE id = $1 AND released_at IS NULL AND NOT EXISTS (SELECT 1 FROM reservation WHERE hold_id = $1)`,
+        [p.hold_id, this.clock.now()]);
+    }
     await c.query(
       `INSERT INTO payment_ledger_entry (entry_type, amount_kobo, user_id, payment_transaction_id, reference, actor)
        VALUES ('unfulfilled_payment', $1, $2, $3, $4, 'system')`, [paid.toString(), p.user_id, p.id, p.reference]);
@@ -382,10 +400,23 @@ export class PaymentsService {
 
   /** Submits queued refunds to the provider. Run by the job, and straight after a refund is queued. */
   async submitRefunds(): Promise<number> {
+    const now = this.clock.now();
+    // Claimed but never sent — the process stopped between claiming and calling the provider. If the call
+    // did reach the provider, a second full refund is refused there (it would exceed the amount paid).
+    await this.pool.query(
+      "UPDATE refund SET status = 'queued', last_error = 'reclaimed: submission did not complete' WHERE status = 'submitted' AND provider_refund_ref IS NULL AND submitted_at < $1",
+      [new Date(now.getTime() - REFUND_STUCK_MINUTES * 60_000)]);
+    // Out of attempts: left as failed, loudly, for operations (NFR-SEC-12). Never silently skipped.
+    const { rows: exhausted } = await this.pool.query<{ id: string; payment_transaction_id: string }>(
+      "UPDATE refund SET status = 'failed' WHERE status = 'queued' AND attempts >= $1 RETURNING id, payment_transaction_id", [MAX_REFUND_ATTEMPTS]);
+    for (const r of exhausted) {
+      this.log.error(`Refund ${r.id} for payment ${r.payment_transaction_id} failed ${MAX_REFUND_ATTEMPTS} times and needs manual action`);
+      await this.event(r.payment_transaction_id, "refund_gave_up", { attempts: MAX_REFUND_ATTEMPTS });
+    }
     const { rows } = await this.pool.query<{ id: string; amount_kobo: string; reason: string; provider_txn_id: string; payment_id: string }>(
       `SELECT r.id, r.amount_kobo::text, r.reason, p.provider_txn_id, p.id AS payment_id FROM refund r
          JOIN payment_transaction p ON p.id = r.payment_transaction_id
-        WHERE r.status = 'queued' AND r.attempts < 10 ORDER BY r.queued_at LIMIT 20`);
+        WHERE r.status = 'queued' ORDER BY r.queued_at LIMIT 20`);
     let n = 0;
     for (const r of rows) {
       // Claim it first, so two job runs cannot submit the same refund twice.
@@ -410,8 +441,13 @@ export class PaymentsService {
     if (!p) return "ignored";
     if (event === "refund.processed") return (await this.refundProcessed(p.id)) ? "refunded" : "already_refunded";
     if (event === "refund.failed") {
-      await this.pool.query("UPDATE refund SET status = 'failed', last_error = 'provider reported refund.failed' WHERE payment_transaction_id = $1 AND status <> 'processed'", [p.id]);
+      // The money went back to the merchant balance. It is still owed: queue the refund again, so the job
+      // retries it until it succeeds or runs out of attempts and is raised to operations.
+      await this.pool.query(
+        "UPDATE refund SET status = 'queued', provider_refund_ref = NULL, last_error = 'provider reported refund.failed' WHERE payment_transaction_id = $1 AND status <> 'processed'",
+        [p.id]);
       await this.event(p.id, "refund_failed", {});
+      this.log.warn(`Refund for payment ${p.id} failed at the provider; queued again`);
       return "refund_failed";
     }
     return "noted";
@@ -446,13 +482,18 @@ export class PaymentsService {
       "SELECT id FROM inventory_hold WHERE released_at IS NULL AND expires_at <= $1 ORDER BY expires_at LIMIT 200", [now]);
     let payments = 0;
     for (const h of holds) {
-      const { rows: open } = await this.pool.query<{ reference: string }>(
-        "SELECT reference FROM payment_transaction WHERE hold_id = $1 AND status = 'initiated'", [h.id]);
-      for (const p of open) {
-        const r = await this.settle(p.reference, "expiry");
-        if (r.state === "confirmed" || r.state === "refund_due") continue;
-        await this.pool.query("UPDATE payment_transaction SET status = 'abandoned', fulfilment = 'not_applicable', updated_at = now() WHERE reference = $1 AND status = 'initiated'", [p.reference]);
-        payments++;
+      // One stubborn payment must not stop every other hold from being closed.
+      try {
+        const { rows: open } = await this.pool.query<{ reference: string }>(
+          "SELECT reference FROM payment_transaction WHERE hold_id = $1 AND status = 'initiated'", [h.id]);
+        for (const p of open) {
+          const r = await this.settle(p.reference, "expiry");
+          if (r.state === "confirmed" || r.state === "refund_due") continue;
+          await this.pool.query("UPDATE payment_transaction SET status = 'abandoned', fulfilment = 'not_applicable', updated_at = now() WHERE reference = $1 AND status = 'initiated'", [p.reference]);
+          payments++;
+        }
+      } catch (err) {
+        this.log.error(`Closing hold ${h.id} failed: ${(err as Error).message}`);
       }
       await this.pool.query(
         "UPDATE inventory_hold SET released_at = expires_at, release_reason = 'expired' WHERE id = $1 AND released_at IS NULL AND NOT EXISTS (SELECT 1 FROM reservation WHERE hold_id = $1)", [h.id]);
@@ -467,6 +508,30 @@ export class PaymentsService {
       payments++;
     }
     return { holds: holds.length, payments };
+  }
+
+  /**
+   * Asks the provider again about recent payments recorded as abandoned or failed. A driver can still
+   * complete a payment on the provider's page after the platform gave up on it; if that webhook is
+   * lost, this is what finds the money, and settle() then books it or refunds it (US-017).
+   */
+  async recheckRecent(): Promise<number> {
+    const now = this.clock.now();
+    const { rows } = await this.pool.query<{ reference: string }>(
+      `SELECT reference FROM payment_transaction
+        WHERE status IN ('abandoned', 'failed') AND created_at > $1 AND (last_checked_at IS NULL OR last_checked_at < $2)
+        ORDER BY created_at DESC LIMIT 50`,
+      [new Date(now.getTime() - RECHECK_HOURS * 3_600_000), new Date(now.getTime() - RECHECK_EVERY_MINUTES * 60_000)]);
+    let found = 0;
+    for (const p of rows) {
+      try {
+        const r = await this.settle(p.reference, "recheck");
+        if (r.state === "confirmed" || r.state === "credited" || r.state === "refund_due") found++;
+      } catch (err) {
+        this.log.error(`Recheck of ${p.reference} failed: ${(err as Error).message}`);
+      }
+    }
+    return found;
   }
 
   // ——— Helpers ———
@@ -516,6 +581,14 @@ export class PaymentsService {
 
   private async event(paymentId: string, kind: string, detail: Record<string, unknown>, c: pg.Pool | pg.PoolClient = this.pool) {
     await c.query("INSERT INTO payment_event (payment_id, kind, detail) VALUES ($1, $2, $3)", [paymentId, kind, JSON.stringify(detail)]);
+  }
+
+  private async pendingTopUps(userId: string): Promise<bigint> {
+    const since = new Date(this.clock.now().getTime() - TOP_UP_ABANDON_MINUTES * 60_000);
+    const { rows: [r] } = await this.pool.query<{ s: string }>(
+      "SELECT COALESCE(sum(amount_kobo), 0)::text AS s FROM payment_transaction WHERE user_id = $1 AND purpose = 'top_up' AND status = 'initiated' AND created_at > $2",
+      [userId, since]);
+    return BigInt(r!.s);
   }
 
   private async balance(userId: string): Promise<bigint> {

@@ -65,11 +65,11 @@ export class ReceiptsService {
 
   async receiptPdf(userId: string, paymentId: string): Promise<{ buffer: Buffer; filename: string }> {
     const { rows: [p] } = await this.pool.query<{
-      reference: string; purpose: string; amount_kobo: string; paid_at: Date | null; channel: string | null; fulfilment: string; fulfilment_note: string | null;
+      reference: string; purpose: string; amount_kobo: string; paid_amount_kobo: string | null; paid_at: Date | null; channel: string | null; fulfilment: string; fulfilment_note: string | null;
       display_name: string; mobile_e164: string; booking_reference: string | null; lot_name: string | null; property: string | null; s: Date | null; e: Date | null;
       hours: number | null; rate_applied_kobo: string | null; service_fee_kobo: string | null; plate: string | null; refund_status: string | null; balance_after: string | null;
     }>(
-      `SELECT pt.reference, pt.purpose::text, pt.amount_kobo::text, pt.paid_at, pt.channel, pt.fulfilment::text, pt.fulfilment_note,
+      `SELECT pt.reference, pt.purpose::text, pt.amount_kobo::text, pt.paid_amount_kobo::text, pt.paid_at, pt.channel, pt.fulfilment::text, pt.fulfilment_note,
               u.display_name, u.mobile_e164, r.reference AS booking_reference, l.name AS lot_name, pr.name AS property,
               lower(r.time_window) AS s, upper(r.time_window) AS e, r.hours, r.rate_applied_kobo::text, r.service_fee_kobo::text,
               v.plate_display AS plate, rf.status::text AS refund_status,
@@ -91,7 +91,10 @@ export class ReceiptsService {
         ["Method", p.channel ? p.channel.replace(/_/g, " ") : "—"],
       ]);
       doc.moveDown();
-      if (p.purpose === "checkout" && p.booking_reference) {
+      if (p.fulfilment === "refund_due") {
+        // Not honoured: say what was received and that it is going back, whatever was asked for.
+        lines(doc, [["Payment received", ngn(p.paid_amount_kobo ?? p.amount_kobo)]], ["Total paid", ngn(p.paid_amount_kobo ?? p.amount_kobo)]);
+      } else if (p.purpose === "checkout" && p.booking_reference) {
         fields(doc, [
           ["Booking", p.booking_reference],
           ["Site", [p.lot_name, p.property].filter(Boolean).join(", ")],

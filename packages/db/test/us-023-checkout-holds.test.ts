@@ -29,8 +29,8 @@ let ref = 0;
 
 const guests = (n: number) => seedDrivers(pool, n, { userType: "guest", balanceKobo: 0n });
 
-function hold(d: SeededDriver, start: Date, hours = 1, now = NOW): Promise<HoldResult> {
-  return placeHold(store, { reference: `H-${++ref}`, userId: d.userId, vehicleId: d.vehicleId, lotId: lot.lotId, start, hours, now, holdMinutes: 10 });
+function hold(d: SeededDriver, start: Date, hours = 1, now = NOW, lotId = lot.lotId): Promise<HoldResult> {
+  return placeHold(store, { reference: `H-${++ref}`, userId: d.userId, vehicleId: d.vehicleId, lotId, start, hours, now, holdMinutes: 10 });
 }
 function book(d: SeededDriver, start: Date, hours = 1): Promise<ReserveResult> {
   return reserve(store, { reference: `R-${++ref}`, userId: d.userId, vehicleId: d.vehicleId, lotId: lot.lotId, start, hours, now: NOW });
@@ -220,6 +220,28 @@ describe("US-135 one live hold per driver", () => {
     const results = await Promise.all(Array.from({ length: 5 }, (_, i) => hold(g!, windowStart(9, 8 + i))));
     expect(okCount(results)).toBe(1);
     expect(results.filter((r) => !r.ok).every((r) => !r.ok && r.reason === "CHECKOUT_IN_PROGRESS" && typeof r.holdId === "string")).toBe(true);
+  });
+
+  it("one driver checking out at several sites at the same instant still gets exactly one hold", async () => {
+    const others = await Promise.all([seedPilotLot(pool), seedPilotLot(pool), seedPilotLot(pool)]);
+    const [g] = await guests(1);
+    for (let round = 0; round < 5; round++) {
+      const start = windowStart(20 + round, 9);
+      const results = await Promise.all([lot, ...others].flatMap((l) => [hold(g!, start, 1, NOW, l.lotId), hold(g!, start, 1, NOW, l.lotId)]));
+      expect(okCount(results)).toBe(1);
+      await pool.query("UPDATE inventory_hold SET released_at = $1, release_reason = 'cancelled' WHERE released_at IS NULL", [NOW]);
+    }
+  });
+
+  it("an on-time conversion is refused when a lapsed earlier hold for the same car converted first (US-026)", async () => {
+    const [g] = await guests(1);
+    const start = windowStart(9, 14);
+    const a = await hold(g!, start);
+    const later = new Date(NOW.getTime() + 11 * 60_000);
+    const b = await hold(g!, start, 1, later); // A has lapsed, so B is allowed
+    expect((await convert(a.ok ? a.holdId : "", later)).ok).toBe(true); // A's bank transfer lands late
+    expect(await convert(b.ok ? b.holdId : "", later)).toEqual({ ok: false, reason: "VEHICLE_ALREADY_BOOKED" });
+    expect(await countRows(pool, "SELECT 1 FROM reservation")).toBe(1);
   });
 
   it("refuses the checkout path to a wallet driver and the wallet path to a guest", async () => {

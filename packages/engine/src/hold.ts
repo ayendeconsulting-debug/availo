@@ -28,7 +28,9 @@ export async function placeHold(store: ReservationStore, req: HoldRequest): Prom
     const { user, tariff, window, candidates, rateKobo, serviceFeeKobo, amountKobo } = p.value;
 
     const pool = await lockAndChoose(tx, candidates, window, req.now);
-    // Checked under the pool lock, so two simultaneous checkouts by one driver cannot both slip through.
+    // The driver's own row is locked after the pools (the same order as a wallet booking), so two
+    // checkouts by one driver serialise even at different sites, and the checks below cannot both pass.
+    await tx.lockWallet(user.id);
     const live = await tx.liveHoldFor(user.id, req.now);
     if (live) return { ok: false, reason: "CHECKOUT_IN_PROGRESS", holdId: live.id } as const;
     // Refused before payment rather than refunded after it.
@@ -83,7 +85,9 @@ export async function convertHoldWithin(tx: ReservationTx, req: ConvertHoldReque
   if (hold.releaseReason === "cancelled") return { ok: false, reason: "HOLD_CANCELLED" };
 
   const late = hold.releasedAt !== null || hold.expiresAt.getTime() <= req.now.getTime();
-  if (late && (await tx.vehicleBookedDuring(hold.vehicleId, hold.window))) return { ok: false, reason: "VEHICLE_ALREADY_BOOKED" };
+  // Every conversion, not only late ones: an earlier hold of the same driver may have converted late
+  // since this one was placed. One car, one booking for any instant (US-026); the later payment is refunded.
+  if (await tx.vehicleBookedDuring(hold.vehicleId, hold.window)) return { ok: false, reason: "VEHICLE_ALREADY_BOOKED" };
   const others = await tx.claimsOverlapping([hold.poolId], hold.window, req.now, hold.id);
   if (!pool || peakOccupancy(others, hold.window) + 1 > pool.capacity) return { ok: false, reason: "NO_CAPACITY" };
 

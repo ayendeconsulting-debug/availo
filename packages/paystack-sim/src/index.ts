@@ -56,6 +56,8 @@ export interface PaystackSimulator {
   /** Resend every webhook for a reference, signed again, exactly as before. */
   resendWebhooks(reference: string): Promise<void>;
   processRefunds(): Promise<void>;
+  /** Fail every pending refund, as Paystack does when the money cannot go back, and send refund.failed. */
+  failRefunds(): Promise<void>;
   setWebhookUrl(url: string | null): void;
   close(): Promise<void>;
 }
@@ -129,6 +131,13 @@ export async function startPaystackSimulator(opts: SimOptions): Promise<Paystack
       await deliver("refund.processed", r.reference, {
         id: r.id, status: "processed", transaction_reference: r.reference, amount: Number(r.amountKobo), currency: "NGN",
       });
+    }
+  }
+
+  async function failRefunds() {
+    for (const r of refunds.filter((x) => x.status === "pending")) {
+      r.status = "failed";
+      await deliver("refund.failed", r.reference, { status: "failed", transaction_reference: r.reference, refund_reference: null, amount: Number(r.amountKobo), currency: "NGN" });
     }
   }
 
@@ -220,6 +229,7 @@ export async function startPaystackSimulator(opts: SimOptions): Promise<Paystack
       for (const body of sentBodies.get(reference) ?? []) await post(JSON.parse(body).event, reference, body);
     },
     processRefunds,
+    failRefunds,
     setWebhookUrl(u) { webhookUrl = u; },
     close: () => new Promise((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }),
   };
