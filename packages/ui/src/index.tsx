@@ -8,7 +8,7 @@ import { useId } from "react";
 type IconName =
   | "back" | "forward" | "close" | "check" | "bell" | "car" | "calendar" | "home" | "list" | "wallet" | "account" | "pin-map"
   | "offline" | "online" | "access" | "clock" | "exit" | "entry" | "search" | "phone" | "scan" | "keypad" | "minus" | "plus"
-  | "x" | "alert" | "sync";
+  | "x" | "alert" | "sync" | "lock" | "card" | "bank" | "receipt";
 
 const PATHS: Record<IconName, ReactNode> = {
   back: <path d="M15 18l-6-6 6-6" />,
@@ -37,6 +37,10 @@ const PATHS: Record<IconName, ReactNode> = {
   plus: <path d="M12 5v14M5 12h14" />,
   x: <path d="M7 7l10 10M17 7L7 17" />,
   alert: <><path d="M12 3l9.5 17H2.5z" /><path d="M12 10v4M12 17h.01" /></>,
+  lock: <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></>,
+  card: <><rect x="3" y="5.5" width="18" height="13" rx="2" /><path d="M3 10h18M7 15h3" /></>,
+  bank: <><path d="M3 9l9-5 9 5" /><path d="M5 9v9M9.5 9v9M14.5 9v9M19 9v9M3 20h18" /></>,
+  receipt: <><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path d="M9 8h6M9 12h6" /></>,
   sync: <><path d="M20 11a8 8 0 00-14.3-4.9L4 8" /><path d="M4 4v4h4" /><path d="M4 13a8 8 0 0014.3 4.9L20 16" /><path d="M20 20v-4h-4" /></>,
 };
 

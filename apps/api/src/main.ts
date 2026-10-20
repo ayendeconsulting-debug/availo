@@ -6,7 +6,8 @@ import { loadConfig } from "./config.js";
 const config = loadConfig();
 const boot = Date.now();
 const clock = config.clockStart ? { now: () => new Date(config.clockStart!.getTime() + (Date.now() - boot)) } : undefined;
-const app = await NestFactory.create(AppModule.forRoot(config, clock ? { clock } : {}));
+// rawBody: provider webhooks are authenticated by a signature over the exact bytes received (US-017).
+const app = await NestFactory.create(AppModule.forRoot(config, clock ? { clock } : {}), { rawBody: true });
 app.enableShutdownHooks();
 app.enableCors({ origin: config.corsOrigins, allowedHeaders: ["Authorization", "Content-Type", "Idempotency-Key", "X-Gate-Device"], maxAge: 600 });
 const port = Number(process.env.PORT ?? 3000);

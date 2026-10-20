@@ -2,31 +2,20 @@ import { randomUUID } from "node:crypto";
 import { Body, Controller, Get, Headers, HttpStatus, Inject, Param, ParseUUIDPipe, Post, Query, UseGuards } from "@nestjs/common";
 import type pg from "pg";
 import { z } from "zod";
-import { checkAvailability, reserve, type RejectReason, type ReservationStore } from "@availo/engine";
+import { checkAvailability, reserve, type ReservationStore } from "@availo/engine";
 import { CLOCK, type Clock } from "../common/clock.js";
 import { PG_POOL, RESERVATION_STORE } from "../common/db.js";
 import { ApiError } from "../common/errors.js";
+import { REJECTIONS } from "../common/rejections.js";
 import { validate } from "../common/validate.js";
 import { AuthGuard, CurrentUser } from "../auth/auth.guard.js";
 import type { AccessClaims } from "../auth/tokens.service.js";
 import { PassService } from "../passes/pass.service.js";
+import { PaymentsService } from "../payments/payments.service.js";
 
 const Start = z.iso.datetime({ offset: true, message: "Give the start as an ISO 8601 date-time, e.g. 2026-10-01T09:00:00+01:00." }).transform((s) => new Date(s));
 const Hours = z.coerce.number().int("Hours must be a whole number.").min(1);
 const Uuid = z.uuid();
-
-/** Each engine refusal maps to one status and one plain-language message (NFR-ACC-07). */
-const REJECTIONS: Record<RejectReason, [HttpStatus, string]> = {
-  USER_NOT_FOUND: [HttpStatus.UNAUTHORIZED, "Sign in again to continue."],
-  USER_NOT_BOOKABLE: [HttpStatus.FORBIDDEN, "This account cannot make bookings right now. Contact the operations team."],
-  VEHICLE_NOT_REGISTERED: [HttpStatus.UNPROCESSABLE_ENTITY, "Choose one of the vehicles registered to your account."],
-  WALLET_PATH_NOT_AVAILABLE: [HttpStatus.UNPROCESSABLE_ENTITY, "Guest bookings are paid at checkout, which is not available yet."],
-  NOT_ELIGIBLE: [HttpStatus.FORBIDDEN, "Accessible bays are reserved for accounts verified as eligible."],
-  INVALID_WINDOW: [HttpStatus.UNPROCESSABLE_ENTITY, "Choose a start time in the future and a duration within the lot's limits."],
-  NO_TARIFF: [HttpStatus.CONFLICT, "This lot is not taking bookings right now."],
-  NO_CAPACITY: [HttpStatus.CONFLICT, "There is no space available for that time. Try another time."],
-  INSUFFICIENT_BALANCE: [HttpStatus.PAYMENT_REQUIRED, "Your balance does not cover this booking. Top up to continue."],
-};
 
 const kobo = (v: bigint | null) => (v === null ? null : v.toString());
 
@@ -38,6 +27,7 @@ export class ReservationsController {
     @Inject(PG_POOL) private readonly pool: pg.Pool,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(PassService) private readonly passes: PassService,
+    @Inject(PaymentsService) private readonly payments: PaymentsService,
   ) {}
 
   /** US-022: the capacity this driver can actually book, and what it would cost against their balance. */
@@ -56,7 +46,9 @@ export class ReservationsController {
       available: r.available,
       pools: r.pools,
       rateKobo: kobo(r.rateKobo),
+      serviceFeeKobo: kobo(r.serviceFeeKobo),
       amountKobo: kobo(r.amountKobo),
+      paymentPath: r.paymentPath,
       minHours: r.minHours,
       maxHours: r.maxHours,
       balanceBeforeKobo: kobo(r.balanceBeforeKobo),
@@ -92,6 +84,8 @@ export class ReservationsController {
         ...(b.accessible !== undefined ? { accessible: b.accessible } : {}),
         ...(key ? { idempotencyKey: key } : {}),
         now: this.clock.now(),
+        // OD-12: allocated credit first, unless the wallet rule says otherwise.
+        consumptionOrder: (await this.payments.walletRule()).consumptionOrder,
       });
     } catch (err) {
       // A concurrent retry with the same key committed first; everything here rolled back.
@@ -140,10 +134,12 @@ export class ReservationsController {
   private async load(where: string, params: unknown[]) {
     const { rows: [r] } = await this.pool.query<{
       id: string; reference: string; lot_id: string; kind: string; s: Date; e: Date; hours: number;
-      rate_applied_kobo: string; amount_kobo: string; wallet_entry_id: string; status: string; plate: string; pass_id: string | null;
+      rate_applied_kobo: string; service_fee_kobo: string; amount_kobo: string; wallet_entry_id: string | null; payment_transaction_id: string | null;
+      status: string; plate: string; pass_id: string | null;
     }>(
       `SELECT r.id, r.reference, r.lot_id, p.kind::text, lower(r.time_window) AS s, upper(r.time_window) AS e, r.hours,
-              r.rate_applied_kobo::text, r.amount_kobo::text, r.wallet_entry_id, r.status::text, v.plate_normalised AS plate, ap.id AS pass_id
+              r.rate_applied_kobo::text, r.service_fee_kobo::text, r.amount_kobo::text, r.wallet_entry_id, r.payment_transaction_id,
+              r.status::text, v.plate_normalised AS plate, ap.id AS pass_id
          FROM reservation r JOIN capacity_pool p ON p.id = r.pool_id JOIN vehicle v ON v.id = r.vehicle_id
          LEFT JOIN access_pass ap ON ap.reservation_id = r.id
         WHERE r.user_id = $1 AND ${where}`,
@@ -153,7 +149,8 @@ export class ReservationsController {
     return {
       id: r.id, reference: r.reference, lotId: r.lot_id, pool: r.kind, status: r.status, plate: r.plate,
       window: { start: r.s.toISOString(), end: r.e.toISOString() }, hours: r.hours,
-      rateAppliedKobo: r.rate_applied_kobo, amountKobo: r.amount_kobo, walletEntryId: r.wallet_entry_id,
+      rateAppliedKobo: r.rate_applied_kobo, serviceFeeKobo: r.service_fee_kobo, amountKobo: r.amount_kobo,
+      walletEntryId: r.wallet_entry_id, paymentTransactionId: r.payment_transaction_id, paidBy: r.wallet_entry_id ? "wallet" : "checkout",
       passId: r.pass_id,
     };
   }

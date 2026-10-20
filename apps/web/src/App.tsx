@@ -9,6 +9,9 @@ import { Pass } from "./screens/Pass.js";
 import { Reserve } from "./screens/Reserve.js";
 import { SignUp } from "./screens/SignUp.js";
 import { Wallet } from "./screens/Wallet.js";
+import { Checkout } from "./screens/Checkout.js";
+import { Payments } from "./screens/Payments.js";
+import { TopUp, TopUpReturn } from "./screens/TopUp.js";
 
 export function App() {
   const path = usePath();
@@ -19,6 +22,12 @@ export function App() {
 
   const pass = /^\/pass\/([0-9a-f-]{36})$/.exec(path);
   if (pass) return <Pass key={pass[1]} reservationId={pass[1]!} />;
+  const uuid = /^[0-9a-f-]{36}$/;
+  const checkout = /^\/checkout\/([0-9a-f-]{36})$/.exec(path);
+  if (checkout) return <Checkout key={checkout[1]} holdId={checkout[1]!} />;
+  const q = new URLSearchParams(location.search);
+  if (path === "/checkout/return" && uuid.test(q.get("hold") ?? "")) return <Checkout key={`r-${q.get("hold")}`} holdId={q.get("hold")!} returning />;
+  if (path === "/wallet/return" && uuid.test(q.get("payment") ?? "")) return <TopUpReturn paymentId={q.get("payment")!} />;
   switch (path) {
     case "/": return <SignUp />;
     case "/code": return <Code />;
@@ -27,6 +36,8 @@ export function App() {
     case "/reserve": return <Reserve />;
     case "/bookings": return <Bookings />;
     case "/wallet": return <Wallet />;
+    case "/wallet/top-up": return <TopUp />;
+    case "/payments": return <Payments />;
     case "/account": return <Account />;
     default: queueMicrotask(() => navigate(signedIn ? "/home" : "/", true)); return null;
   }

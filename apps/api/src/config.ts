@@ -22,6 +22,16 @@ export interface AppConfig {
    * runs forward in real time. Refused in production.
    */
   readonly clockStart: Date | null;
+  /** Payments (HLR §3.6). Paystack in every environment; in development it points at the local simulator. */
+  readonly payments: {
+    readonly provider: "paystack";
+    readonly paystackSecretKey: string;
+    readonly paystackBaseUrl: string;
+    /** Paystack requires an email; drivers who gave none are sent to it under this domain. */
+    readonly fallbackEmailDomain: string;
+    /** Runs the hold-expiry and refund jobs on an interval. Off in tests, which call them directly. */
+    readonly runJobs: boolean;
+  };
 }
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
@@ -54,6 +64,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     corsOrigins: (env.CORS_ORIGINS ?? (mode === "production" ? "" : "http://localhost:5173,http://localhost:5174,http://localhost:4173,http://localhost:4174"))
       .split(",").map((s) => s.trim()).filter(Boolean),
     clockStart: clockStart(env.AVAILO_CLOCK_START, mode),
+    payments: payments(env, mode, required),
+  };
+}
+
+function payments(env: NodeJS.ProcessEnv, mode: AppConfig["env"], required: (n: string, d: string) => string): AppConfig["payments"] {
+  const paystackSecretKey = required("PAYSTACK_SECRET_KEY", "sk_test_availo_simulator");
+  const paystackBaseUrl = env.PAYSTACK_BASE_URL ?? (mode === "production" ? "https://api.paystack.co" : "http://localhost:4010");
+  if (mode === "production" && !paystackBaseUrl.startsWith("https://")) throw new Error("PAYSTACK_BASE_URL must be https in production");
+  if (mode === "production" && paystackSecretKey === "sk_test_availo_simulator") throw new Error("PAYSTACK_SECRET_KEY must be a real key in production");
+  return {
+    provider: "paystack",
+    paystackSecretKey,
+    paystackBaseUrl,
+    fallbackEmailDomain: required("PAYMENT_FALLBACK_EMAIL_DOMAIN", "drivers.availo.test"),
+    runJobs: (env.PAYMENT_JOBS ?? (mode === "test" ? "off" : "on")) === "on",
   };
 }
 

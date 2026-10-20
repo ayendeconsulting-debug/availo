@@ -30,13 +30,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      # US-023 / NFR-ARC-09: the capacity-boundary concurrency test is a release gate.
-      # It runs as its own named step so a red here is unmistakable.
-      - name: US-023 capacity-boundary concurrency test (release gate)
+      # US-023 / NFR-ARC-09: the capacity-boundary concurrency tests are a release gate —
+      # wallet bookings, and since sprint 2 checkout holds and their conversion (US-135).
+      # They run as their own named step so a red here is unmistakable.
+      - name: US-023 capacity-boundary concurrency tests (release gate)
         run: pnpm test:capacity
       - run: pnpm test
-      # Handover §7 "done when": the walking skeleton end to end, ten consecutive times.
-      - name: Sprint 1 headless demo (10 consecutive runs)
+      # Handover §7 "done when", extended in sprint 2: wallet top-up and booking, offline gate,
+      # and guest checkout with repeated webhooks, end to end, ten consecutive times.
+      - name: Headless demo (10 consecutive runs)
         run: pnpm demo
         env:
           DEMO_PG_URL: postgres://postgres:postgres@localhost:5432
@@ -65,7 +67,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pnpm exec playwright install --with-deps chromium
-      - name: Offline gate, end to end in a real browser
+      - name: Offline gate and both payment paths, end to end in a real browser
         run: pnpm e2e
         env:
           E2E_SCREENSHOTS: e2e-screens

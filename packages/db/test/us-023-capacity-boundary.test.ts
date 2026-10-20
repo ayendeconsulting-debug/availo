@@ -14,8 +14,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { reserve, type ReservationStore, type ReserveResult } from "@availo/engine";
 import { createPgReservationStore } from "../src/index.js";
 import {
-  DATABASE_URL, HOUR, NOW, TEST_RATE_KOBO,
-  capacityBreaches, countRows, ledgerBalance, resetDatabase, seedDrivers, seedPilotLot, windowStart,
+  DATABASE_URL, NOW, TEST_RATE_KOBO,
+  capacityBreaches, countRows, insertRawHold, ledgerBalance, resetDatabase, seedDrivers, seedPilotLot, windowStart,
   type SeededDriver, type SeededLot,
 } from "./harness.js";
 
@@ -167,11 +167,7 @@ describe("US-023 capacity is peak occupancy over the window, not a count of over
     const holders = await seedDrivers(pool, 18, { balanceKobo: 0n });
     const start = windowStart(5, 9);
     for (const [i, h] of holders.entries()) {
-      await pool.query(
-        `INSERT INTO inventory_hold (user_id, pool_id, time_window, expires_at)
-         VALUES ($1, $2, tstzrange($3, $4, '[)'), $5)`,
-        [h.userId, i < 12 ? lot.pools.campus : lot.pools.open, start, new Date(start.getTime() + HOUR), new Date(NOW.getTime() + 10 * 60_000)],
-      );
+      await insertRawHold(pool, lot, h, i < 12 ? lot.pools.campus : lot.pools.open, start, 1, new Date(NOW.getTime() + 10 * 60_000));
     }
     const [d] = await seedDrivers(pool, 1);
     expect(await book(d!, start, 1)).toEqual({ ok: false, reason: "NO_CAPACITY" });
