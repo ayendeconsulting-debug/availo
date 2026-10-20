@@ -21,7 +21,10 @@ export type AvailabilityResult =
       readonly pools: ReadonlyArray<{ kind: PoolKind; capacity: number; available: number }>;
       readonly available: number;
       readonly rateKobo: bigint;
+      readonly serviceFeeKobo: bigint;
       readonly amountKobo: bigint;
+      /** The payment path the booking will use (US-016, US-134). */
+      readonly paymentPath: "wallet" | "checkout";
       /** US-013: duration limits from the tariff in force. */
       readonly minHours: number;
       readonly maxHours: number;
@@ -54,15 +57,17 @@ export async function checkAvailability(store: ReservationStore, req: Availabili
       capacity: p.capacity,
       available: Math.max(0, p.capacity - peakOccupancy(claims.filter((c) => c.poolId === p.id), window)),
     }));
-    const amount = tariff.hourlyRateKobo * BigInt(req.hours);
-    const wallet = user.userType === "guest" ? null : await tx.walletBalanceKobo(user.id);
+    const amount = tariff.hourlyRateKobo * BigInt(req.hours) + tariff.serviceFeeKobo;
+    const wallet = user.walletEnabled ? await tx.walletBalanceKobo(user.id) : null;
     return {
       ok: true,
       window,
       pools,
       available: pools.reduce((n, p) => n + p.available, 0),
       rateKobo: tariff.hourlyRateKobo,
+      serviceFeeKobo: tariff.serviceFeeKobo,
       amountKobo: amount,
+      paymentPath: user.walletEnabled ? "wallet" : "checkout",
       minHours: tariff.minHours,
       maxHours: tariff.maxHours,
       balanceBeforeKobo: wallet,

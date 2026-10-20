@@ -1,6 +1,7 @@
-import { BrandBar, Chip, Shell, naira, watDay, watTime } from "@availo/ui";
+import { BrandBar, Chip, Icon, Shell, naira, watDay, watTime } from "@availo/ui";
 import { api, type Wallet as W } from "../api.js";
 import { useCached } from "../hooks.js";
+import { go } from "../router.js";
 import { DriverNav } from "./Nav.js";
 
 const LABELS: Record<string, string> = {
@@ -8,7 +9,7 @@ const LABELS: Record<string, string> = {
   penalty: "Overstay charge", refund: "Refund", reversal: "Correction",
 };
 
-/** US-019: balance and history, each line with its running balance. Read only; top-up arrives in sprint 2. */
+/** US-019: balance and history, each line with its running balance. US-016: top up from here. */
 export function Wallet() {
   const w = useCached<W>(() => api<W>("GET", "/wallet"), () => null, () => undefined);
   return (
@@ -20,8 +21,13 @@ export function Wallet() {
             <div className="av-kicker kicker">Wallet</div>
             <div className="amount">{w.data ? naira(w.data.balanceKobo) : "—"}</div>
           </div>
+          <a className="av-btn" href="/wallet/top-up" onClick={go("/wallet/top-up")}>Top up</a>
         </div>
-        <p className="av-note">Topping up with card, transfer or USSD arrives in the next release.</p>
+        <a className="av-item" href="/payments" onClick={go("/payments")}>
+          <span style={{ display: "flex", color: "var(--muted)" }}><Icon name="receipt" /></span>
+          <span className="main"><strong>Payments and receipts</strong><small>Top-ups, receipts as PDF, statements</small></span>
+          <Icon name="forward" size={18} />
+        </a>
         <div className="av-kicker">History</div>
         {w.offline && !w.data ? <p className="av-note">History needs a connection.</p> : null}
         {w.data?.entries.map((e) => (

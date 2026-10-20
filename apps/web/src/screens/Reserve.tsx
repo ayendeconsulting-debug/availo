@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { BackBar, Bays, Icon, Row, Shell, naira } from "@availo/ui";
 import { api, ApiError, OfflineError, type Availability, type Booking } from "../api.js";
 import { useLot, useMe } from "../hooks.js";
-import { navigate } from "../router.js";
+import { go, navigate } from "../router.js";
+import { startCheckout } from "./Checkout.js";
 
 const POOL_LABEL: Record<string, string> = { campus: "campus", open: "open", accessible: "accessible" };
 const FIRST_HOUR = 6;
@@ -21,7 +22,8 @@ const iso = (day: { y: number; m: number; d: number }, hour: number) =>
 /**
  * D5 · Reserve hours (US-022). Shows only the capacity this driver may book,
  * the cost at the rate in force, the wallet before and after, and the terms,
- * before anything is confirmed. Capacity and payment commit together.
+ * before anything is confirmed. Capacity and payment commit together: from the
+ * wallet at once, or at checkout behind a hold (US-134, US-135).
  * Opening hours per lot (US-011) are not modelled yet; start times run 06:00–21:00.
  */
 export function Reserve() {
@@ -29,10 +31,13 @@ export function Reserve() {
   const lot = useLot();
   const days = useMemo(() => [0, 1, 2, 3].map(watDate), []);
   const nowWatHour = new Date(Date.now() + 3_600_000).getUTCHours();
-  const [dayIdx, setDayIdx] = useState(nowWatHour >= LAST_START ? 1 : 0);
+  // The choice survives a detour to top up (US-021: return to the booking afterwards), for this tab only.
+  const saved = useMemo(() => { try { return JSON.parse(sessionStorage.getItem("av.reserve") ?? "null") as { dayIdx: number; startHour: number; hours: number } | null; } catch { return null; } }, []);
+  const [dayIdx, setDayIdx] = useState(saved?.dayIdx ?? (nowWatHour >= LAST_START ? 1 : 0));
   const firstStart = dayIdx === 0 ? Math.max(FIRST_HOUR, nowWatHour + 1) : FIRST_HOUR;
-  const [startHour, setStartHour] = useState(Math.max(9, firstStart));
-  const [hours, setHours] = useState(3);
+  const [startHour, setStartHour] = useState(saved?.startHour ?? Math.max(9, firstStart));
+  const [hours, setHours] = useState(saved?.hours ?? 3);
+  useEffect(() => { try { sessionStorage.setItem("av.reserve", JSON.stringify({ dayIdx, startHour, hours })); } catch { /* ignore */ } }, [dayIdx, startHour, hours]);
   const [quote, setQuote] = useState<Availability | null>(null);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -54,21 +59,34 @@ export function Reserve() {
   const pool = quote?.pools.find((p) => p.available > 0) ?? quote?.pools[0];
   const endHour = hour + hours;
   const short = quote?.balanceAfterKobo != null && BigInt(quote.balanceAfterKobo) < 0n;
+  const shortfall = short ? -BigInt(quote!.balanceAfterKobo!) : 0n;
+  const checkout = quote?.paymentPath === "checkout";
+  const parking = quote ? BigInt(quote.amountKobo) - BigInt(quote.serviceFeeKobo) : 0n;
+  const [shortBy, setShortBy] = useState<bigint>(0n);
 
   async function reserve() {
     if (!lot.data || !vehicle) return;
     setBusy(true);
     setError(undefined);
     try {
+      if (checkout) {
+        // US-135: the space is held while the driver pays on the provider's page.
+        const holdId = await startCheckout({ lotId: lot.data.id, vehicleId: vehicle.id, start, hours }, key);
+        navigate(`/checkout/${holdId}`);
+        return;
+      }
       const b = await api<Booking>("POST", "/reservations", { lotId: lot.data.id, vehicleId: vehicle.id, start, hours }, { idempotencyKey: key });
       navigate(`/pass/${b.id}`, true);
     } catch (e) {
-      if (e instanceof ApiError && e.code === "INSUFFICIENT_BALANCE") setError(`Your balance is ${naira(String(e.detail.shortfallKobo ?? 0))} short. Wallet top-up arrives in the next release.`);
+      if (e instanceof ApiError && e.code === "INSUFFICIENT_BALANCE") setShortBy(BigInt(String(e.detail.shortfallKobo ?? 0)));
       else setError(e instanceof OfflineError ? "No connection. Nothing was booked or charged." : (e as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  // US-021: state the shortfall and offer the top-up in the same flow, returning here afterwards.
+  const topUpBy = shortBy > 0n ? shortBy : shortfall;
+  const topUpHref = `/wallet/top-up?amount=${topUpBy}&return=/reserve`;
 
   return (
     <Shell>
@@ -119,7 +137,9 @@ export function Reserve() {
             </div>
           ) : null}
           <div className="av-rule" />
-          <Row label={`${hours} h × ${quote ? naira(quote.rateKobo) : "…"}`} value={quote ? naira(quote.amountKobo) : "…"} />
+          <Row label={`${hours} h × ${quote ? naira(quote.rateKobo) : "…"}`} value={quote ? naira(parking) : "…"} />
+          {quote && BigInt(quote.serviceFeeKobo) > 0n ? <Row label="Service fee" value={naira(quote.serviceFeeKobo)} /> : null}
+          {quote && (checkout || BigInt(quote.serviceFeeKobo) > 0n) ? <Row label="Total" value={naira(quote.amountKobo)} /> : null}
           {quote?.balanceBeforeKobo != null ? (
             <Row label="Wallet after booking" value={`${naira(quote.balanceBeforeKobo)} → ${naira(quote.balanceAfterKobo!)}`} />
           ) : null}
@@ -132,11 +152,23 @@ export function Reserve() {
           </div>
         </div>
         {error ? <div className="av-banner bad" role="alert">{error}</div> : null}
-        {short && !error ? <div className="av-banner warn" role="status">Your balance doesn&apos;t cover these hours. Choose fewer hours; top-up arrives in the next release.</div> : null}
+        {(short || shortBy > 0n) && !error ? (
+          <div className="av-banner warn" role="status">
+            Your balance is {naira(topUpBy)} short for these hours.{" "}
+            <a href={topUpHref} onClick={go(topUpHref)}>Top up {naira(topUpBy)}</a> and come straight back.
+          </div>
+        ) : null}
         <div className="av-spacer" />
-        <button type="button" className="av-btn" onClick={reserve} disabled={busy || !quote || quote.available === 0 || short || !vehicle}>
-          {busy ? "Reserving…" : quote?.available === 0 ? "Full for these hours" : `Reserve · ${quote ? naira(quote.amountKobo) : ""}`}
-        </button>
+        {short ? (
+          <a className="av-btn" href={topUpHref} onClick={go(topUpHref)}><Icon name="wallet" color="#1E2124" />Top up {naira(topUpBy)}</a>
+        ) : (
+          <button type="button" className="av-btn" onClick={reserve} disabled={busy || !quote || quote.available === 0 || !vehicle}>
+            {busy ? (checkout ? "Holding your space…" : "Reserving…")
+              : quote?.available === 0 ? "Full for these hours"
+              : checkout ? `Continue to pay · ${quote ? naira(quote.amountKobo) : ""}`
+              : `Reserve · ${quote ? naira(quote.amountKobo) : ""}`}
+          </button>
+        )}
       </main>
     </Shell>
   );

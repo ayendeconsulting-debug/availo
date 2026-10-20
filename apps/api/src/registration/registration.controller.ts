@@ -123,6 +123,8 @@ export class RegistrationController {
       id: u.id, name: u.display_name, userType: u.user_type, verificationState: u.verification_state,
       vehicles: vehicles.map((v) => ({ id: v.id, plate: v.plate_normalised })),
       walletBalanceKobo,
+      // US-016, US-134: which way this driver pays. Configuration, not a user-type branch in the client.
+      paymentPath: u.wallet_enabled ? "wallet" : "checkout",
     };
   }
 }

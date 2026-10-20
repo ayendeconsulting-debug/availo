@@ -14,7 +14,8 @@
     "db:seed": "tsx packages/db/src/seed.ts",
     "gate:admin": "tsx apps/api/src/cli/gate-admin.ts",
     "e2e": "playwright test",
-    "demo": "tsx apps/api/scripts/demo.ts"
+    "demo": "tsx apps/api/scripts/demo.ts",
+    "paystack:sim": "pnpm --filter @availo/paystack-sim start"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

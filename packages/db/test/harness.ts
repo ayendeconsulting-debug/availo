@@ -97,18 +97,18 @@ export async function seedDrivers(
  * intervals is always reached at some interval's start, so those are the only
  * instants that need checking.
  */
-export async function capacityBreaches(pool: pg.Pool): Promise<Array<{ kind: string; capacity: number; peak: number }>> {
+export async function capacityBreaches(pool: pg.Pool, at: Date = NOW): Promise<Array<{ kind: string; capacity: number; peak: number }>> {
   const { rows } = await pool.query<{ kind: string; capacity: number; peak: string }>(`
     WITH claims AS (
       SELECT pool_id, time_window FROM reservation WHERE status = 'confirmed'
       UNION ALL
-      SELECT pool_id, time_window FROM inventory_hold WHERE released_at IS NULL AND expires_at > now()
+      SELECT pool_id, time_window FROM inventory_hold WHERE released_at IS NULL AND expires_at > $1
     ),
     instants AS (SELECT DISTINCT pool_id, lower(time_window) AS t FROM claims)
     SELECT cp.kind::text AS kind, cp.capacity,
            max((SELECT count(*) FROM claims c WHERE c.pool_id = i.pool_id AND c.time_window @> i.t)) AS peak
     FROM instants i JOIN capacity_pool cp ON cp.id = i.pool_id
-    GROUP BY cp.id, cp.kind, cp.capacity`);
+    GROUP BY cp.id, cp.kind, cp.capacity`, [at]);
   return rows
     .map((r) => ({ kind: r.kind, capacity: r.capacity, peak: Number(r.peak) }))
     .filter((r) => r.peak > r.capacity);
@@ -134,3 +134,31 @@ export function windowStart(dayOffset: number, hourOfDay: number): Date {
 }
 
 export const NOW = new Date(Date.UTC(2029, 11, 31, 12));
+
+/**
+ * A hold written directly, for tests that need more holds than any one user type
+ * can place through the engine (staff and students pay by wallet, so cannot hold).
+ */
+export async function insertRawHold(
+  pool: pg.Pool, lot: SeededLot, d: SeededDriver, poolId: string, start: Date, hours: number, expiresAt: Date,
+): Promise<string> {
+  const { rows: [h] } = await pool.query<{ id: string }>(
+    `INSERT INTO inventory_hold (reference, user_id, vehicle_id, lot_id, pool_id, time_window, hours, tariff_id,
+                                 rate_applied_kobo, amount_kobo, expires_at)
+     VALUES ('H-' || gen_random_uuid(), $1, $2, $3, $4, tstzrange($5, $6, '[)'), $7, $8, $9, $10, $11) RETURNING id`,
+    [d.userId, d.vehicleId, lot.lotId, poolId, start, new Date(start.getTime() + hours * HOUR), hours, lot.tariffId,
+     TEST_RATE_KOBO.toString(), (TEST_RATE_KOBO * BigInt(hours)).toString(), expiresAt],
+  );
+  return h!.id;
+}
+
+/** A verified checkout payment for a hold, as the payments service would record one. */
+export async function insertPaymentFor(pool: pg.Pool, holdId: string): Promise<string> {
+  const { rows: [p] } = await pool.query<{ id: string }>(
+    `INSERT INTO payment_transaction (reference, user_id, purpose, provider, amount_kobo, hold_id, status, verified_at)
+     SELECT 'P-' || gen_random_uuid(), user_id, 'checkout', 'test', amount_kobo, id, 'succeeded', now() FROM inventory_hold WHERE id = $1
+     RETURNING id`,
+    [holdId],
+  );
+  return p!.id;
+}

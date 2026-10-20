@@ -16,8 +16,14 @@ import { GateAuthService } from "./gate/gate-auth.service.js";
 import { GateSyncService } from "./gate/gate-sync.service.js";
 import { AttendantGuard } from "./gate/attendant.guard.js";
 import { DriverController } from "./driver/driver.controller.js";
+import { PAYMENT_PROVIDER, type PaymentProvider } from "./payments/provider.js";
+import { PaystackProvider } from "./payments/paystack.js";
+import { PaymentsService } from "./payments/payments.service.js";
+import { ReceiptsService } from "./payments/receipts.service.js";
+import { PaymentJobs } from "./payments/payment-jobs.js";
+import { PaymentsController, WebhooksController } from "./payments/payments.controller.js";
 
-export interface AppOverrides { clock?: Clock; sms?: SmsSender }
+export interface AppOverrides { clock?: Clock; sms?: SmsSender; payments?: PaymentProvider }
 
 /**
  * Modular monolith (NFR-ARC-02). Module boundaries follow the requirements'
@@ -30,11 +36,12 @@ export class AppModule {
       module: AppModule,
       imports: [DbModule],
       global: true,
-      controllers: [AuthController, RegistrationController, ReservationsController, PassesController, GateController, DriverController],
+      controllers: [AuthController, RegistrationController, ReservationsController, PassesController, GateController, DriverController, PaymentsController, WebhooksController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: CLOCK, useValue: overrides.clock ?? systemClock },
         { provide: SMS_SENDER, useValue: overrides.sms ?? new DevSmsSender(config.env === "development") },
+        { provide: PAYMENT_PROVIDER, useValue: overrides.payments ?? new PaystackProvider(config.payments.paystackSecretKey, config.payments.paystackBaseUrl) },
         OtpService,
         TokensService,
         AuthGuard,
@@ -42,6 +49,9 @@ export class AppModule {
         GateAuthService,
         GateSyncService,
         AttendantGuard,
+        PaymentsService,
+        ReceiptsService,
+        PaymentJobs,
       ],
       exports: [APP_CONFIG, CLOCK],
     };

@@ -18,11 +18,16 @@ export const SEED = {
     { name: "Tunde Bakare", mobile: "+2348030000002", staffNo: "UNILAG-S-0002", plate: "KJA456CD", balanceKobo: 300_000n },
     { name: "Ngozi Eze", mobile: "+2348030000003", staffNo: "UNILAG-S-0003", plate: "EKY789EF", balanceKobo: 100_000n },
   ],
+  /** Sprint 2: a guest, who pays at checkout and has no wallet (US-131, US-134). */
+  guests: [
+    { name: "Chidi Nwosu", mobile: "+2348030000010", plate: "APP321GH" },
+  ],
 } as const;
 
 export interface SeedResult {
   lotId: string;
   users: Array<{ id: string; mobile: string; vehicleId: string }>;
+  guests: Array<{ id: string; mobile: string; vehicleId: string }>;
 }
 
 export async function seed(client: pg.ClientBase): Promise<SeedResult> {
@@ -53,13 +58,23 @@ export async function seed(client: pg.ClientBase): Promise<SeedResult> {
       const { rows: [v] } = await client.query<{ id: string }>(
         "INSERT INTO vehicle (user_id, plate_display, plate_normalised) VALUES ($1, $2, $2) RETURNING id", [u!.id, d.plate]);
       await client.query(
-        `INSERT INTO wallet_entry (user_id, entry_type, amount_kobo, reference, actor)
-         VALUES ($1, 'allocation', $2, $3, 'seed')`,
+        `INSERT INTO wallet_entry (user_id, entry_type, amount_kobo, allocated_kobo, reference, actor)
+         VALUES ($1, 'allocation', $2, $2, $3, 'seed')`,
         [u!.id, d.balanceKobo.toString(), `SEED-${d.staffNo}`]);
       users.push({ id: u!.id, mobile: d.mobile, vehicleId: v!.id });
     }
+    const guests: SeedResult["guests"] = [];
+    for (const g of SEED.guests) {
+      const { rows: [u] } = await client.query<{ id: string }>(
+        `INSERT INTO app_user (mobile_e164, display_name, user_type, verification_state, verified_at, verified_by)
+         VALUES ($1, $2, 'guest', 'verified', now(), 'seed') RETURNING id`,
+        [g.mobile, g.name]);
+      const { rows: [v] } = await client.query<{ id: string }>(
+        "INSERT INTO vehicle (user_id, plate_display, plate_normalised) VALUES ($1, $2, $2) RETURNING id", [u!.id, g.plate]);
+      guests.push({ id: u!.id, mobile: g.mobile, vehicleId: v!.id });
+    }
     await client.query("COMMIT");
-    return { lotId: lot!.id, users };
+    return { lotId: lot!.id, users, guests };
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -72,7 +87,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await client.connect();
   try {
     const r = await seed(client);
-    console.log(`Seeded lot ${r.lotId} with ${r.users.length} staff drivers.`);
+    console.log(`Seeded lot ${r.lotId} with ${r.users.length} staff drivers and ${r.guests.length} guest.`);
   } finally {
     await client.end();
   }

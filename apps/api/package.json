@@ -15,6 +15,7 @@
     "@nestjs/core": "^11.2.6",
     "@nestjs/platform-express": "^11.2.6",
     "jose": "^6.2.12",
+    "pdfkit": "0.17.2",
     "pg": "^8.23.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
@@ -23,8 +24,10 @@
   "devDependencies": {
     "@availo/gate-client": "workspace:*",
     "@availo/pass": "workspace:*",
+    "@availo/paystack-sim": "workspace:*",
     "@nestjs/testing": "^11.2.6",
     "@types/express": "^5.0.6",
+    "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "fake-indexeddb": "^6.2.5",

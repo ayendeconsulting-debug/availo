@@ -1,12 +1,16 @@
 /**
- * Sprint 1 headless demo (handover §7 item 12). Runs the walking skeleton end
- * to end against a real API process and Postgres, ten times, and fails loudly
- * if any invariant breaks:
+ * Headless demo (handover §7 item 12), extended in sprint 2. Runs end to end
+ * against a real API process, real Postgres and the Paystack simulator, ten
+ * times, and fails loudly if any invariant breaks:
  *
- *   a staff member registers, holds a seeded wallet, reserves one hour, gets a
- *   pass, is scanned in by a gate device with no network, the entry syncs,
- *   they are scanned out offline, the exit syncs — and the reservation, the
- *   ledger, the balance, occupancy and the capacity cap all agree.
+ *   a staff member registers, is granted credit and tops up through the
+ *   provider (webhook repeated, verified once), reserves one hour from the
+ *   wallet — allocated credit first — gets a pass, is scanned in by a gate
+ *   device with no network, the entry syncs, they are scanned out offline, the
+ *   exit syncs; a guest registers, checks out behind a hold, pays on the
+ *   provider's page, and is confirmed exactly once however often the webhook
+ *   repeats — and reservations, both ledgers, the balance, occupancy and the
+ *   capacity cap all agree.
  *
  *   pnpm demo                       # ten runs
  *   DEMO_RUNS=50 pnpm demo          # more
@@ -22,6 +26,7 @@ import pg from "pg";
 import { IDBFactory } from "fake-indexeddb";
 import { DeviceRevokedError, GateClient, GateStore, NetworkError, type CacheDocument, type GateApi, type GateEvent, type SyncResult } from "@availo/gate-client";
 import { fromBase64Url, qrText } from "@availo/pass";
+import { startPaystackSimulator, type PaystackSimulator } from "@availo/paystack-sim";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const PG = process.env.DEMO_PG_URL ?? process.env.E2E_PG_URL ?? "postgres://postgres@localhost:5432";
@@ -30,7 +35,11 @@ const PORT = Number(process.env.DEMO_PORT ?? 3100);
 const API = `http://localhost:${PORT}`;
 const RUNS = Number(process.env.DEMO_RUNS ?? 10);
 const RATE = 50_000n; // seed placeholder, OD-04
-const WALLET = 200_000n; // ₦2,000 seeded per driver
+const ALLOCATED = 30_000n; // ₦300 granted by the project (US-018)
+const TOP_UP = 170_000n; // ₦1,700 paid in through the provider (US-016)
+const WALLET = ALLOCATED + TOP_UP;
+const SECRET = "sk_test_availo_demo";
+let sim: PaystackSimulator;
 // 08:50 in Lagos. Every run books 09:00–10:00; the gate admits from 08:45.
 const T0 = new Date("2030-01-01T07:50:00Z");
 
@@ -62,7 +71,10 @@ let api: { proc: ChildProcess; log: string } | null = null;
 async function startApi() {
   const proc = spawn("pnpm", ["exec", "tsx", "apps/api/src/main.ts"], {
     cwd: ROOT,
-    env: { ...process.env, NODE_ENV: "development", DATABASE_URL: DB_URL, PORT: String(PORT), AVAILO_CLOCK_START: now().toISOString() },
+    env: {
+      ...process.env, NODE_ENV: "development", DATABASE_URL: DB_URL, PORT: String(PORT), AVAILO_CLOCK_START: now().toISOString(),
+      PAYSTACK_SECRET_KEY: SECRET, PAYSTACK_BASE_URL: sim.url, PAYMENT_JOBS: "off",
+    },
   });
   api = { proc, log: "" };
   proc.stdout!.on("data", (d) => { api!.log += String(d); });
@@ -141,6 +153,7 @@ async function setup() {
   await admin.end();
   run("pnpm", ["-s", "db:migrate"], { DATABASE_URL: DB_URL });
   run("pnpm", ["-s", "db:seed"], { DATABASE_URL: DB_URL });
+  sim = await startPaystackSimulator({ secretKey: SECRET, webhookUrl: `http://127.0.0.1:${PORT}/webhooks/paystack` });
   await startApi();
 
   const lotId = (await one<{ id: string }>("SELECT id FROM lot")).id;
@@ -175,9 +188,16 @@ async function oneRun(i: number, lotId: string, link: GateLink, gate: GateClient
   eq(reg.user.verificationState, "verified", "staff are verified automatically (US-006)");
   const auth = { Authorization: `Bearer ${reg.accessToken}` };
 
-  // 2. Seeded wallet: an allocation, as the seed records it (top-up arrives in sprint 2).
-  await db.query("INSERT INTO wallet_entry (user_id, entry_type, amount_kobo, reference, actor) VALUES ($1, 'allocation', $2, $3, 'demo-seed')",
-    [reg.user.id, WALLET.toString(), `DEMO-SEED-${i}`]);
+  // 2. Credit granted by the project, then a top-up through the provider (US-016, US-018).
+  await db.query("INSERT INTO wallet_entry (user_id, entry_type, amount_kobo, allocated_kobo, reference, actor) VALUES ($1, 'allocation', $2, $2, $3, 'demo-grant')",
+    [reg.user.id, ALLOCATED.toString(), `DEMO-GRANT-${i}`]);
+  const topUp = await ok<{ paymentId: string; reference: string; state: string }>("POST", "/top-ups", { amountKobo: TOP_UP.toString() }, { ...auth, "Idempotency-Key": randomUUID() });
+  eq(topUp.state, "pending", "nothing is credited before payment");
+  await sim.pay(topUp.reference, { channel: "bank_transfer" });
+  await sim.resendWebhooks(topUp.reference);
+  await sim.resendWebhooks(topUp.reference);
+  const credited = await ok<{ state: string; balanceKobo: string }>("POST", `/top-ups/${topUp.paymentId}/verify`, undefined, auth);
+  eq([credited.state, credited.balanceKobo], ["credited", WALLET.toString()], "the top-up is credited once (US-017)");
 
   // 3. Reserve one hour, 09:00–10:00 WAT.
   const start = "2030-01-01T09:00:00+01:00";
@@ -240,19 +260,64 @@ async function oneRun(i: number, lotId: string, link: GateLink, gate: GateClient
   check(r.pool !== "accessible", "a general booking never draws on the accessible pool");
   const debit = await one<{ amount: string; user_id: string; entry_type: string }>("SELECT amount_kobo::text AS amount, user_id, entry_type::text FROM wallet_entry WHERE id = $1", [r.wallet_entry_id]);
   eq([debit.entry_type, debit.amount, debit.user_id], ["reservation_debit", (-RATE).toString(), reg.user.id], "the reservation points at the debit that paid for it (US-023)");
-  const ledger = await one<{ b: string; debits: number }>(
-    "SELECT COALESCE(sum(amount_kobo),0)::text AS b, count(*) FILTER (WHERE entry_type = 'reservation_debit')::int AS debits FROM wallet_entry WHERE user_id = $1", [reg.user.id]);
-  eq([ledger.b, ledger.debits], [(WALLET - RATE).toString(), 1], "ledger: allocation minus one debit");
+  const split = await one<{ allocated: string }>("SELECT allocated_kobo::text AS allocated FROM wallet_entry WHERE id = $1", [r.wallet_entry_id]);
+  eq(split.allocated, (-ALLOCATED).toString(), "OD-12: the grant is consumed before paid credit");
+  const ledger = await one<{ b: string; debits: number; topUps: number }>(
+    `SELECT COALESCE(sum(amount_kobo),0)::text AS b, count(*) FILTER (WHERE entry_type = 'reservation_debit')::int AS debits,
+            count(*) FILTER (WHERE entry_type = 'top_up')::int AS "topUps" FROM wallet_entry WHERE user_id = $1`, [reg.user.id]);
+  eq([ledger.b, ledger.debits, ledger.topUps], [(WALLET - RATE).toString(), 1, 1], "ledger: grant plus one top-up minus one debit");
   const wallet = await ok<{ balanceKobo: string; entries: Array<{ balanceAfterKobo: string }> }>("GET", "/wallet", undefined, auth);
   eq(wallet.balanceKobo, ledger.b, "the balance the driver sees is the ledger sum (US-020)");
-  eq(wallet.entries.map((e) => e.balanceAfterKobo), [(WALLET - RATE).toString(), WALLET.toString()], "running balances");
+  eq(wallet.entries.map((e) => e.balanceAfterKobo), [(WALLET - RATE).toString(), WALLET.toString(), ALLOCATED.toString()], "running balances");
   const session = await one<{ state: string; entered: Date; exited: Date }>("SELECT state::text, entered_at AS entered, exited_at AS exited FROM parking_session WHERE reservation_id = $1", [booking.id]);
   eq(session.state, "ended", "occupancy: the session ends on exit");
   check(session.exited >= session.entered, "exit after entry");
   const active = await one<{ n: number }>("SELECT count(*)::int AS n FROM parking_session WHERE state = 'active'");
   eq(active.n, 0, "occupancy: no car left on site");
+
+  // 10. A guest checks out behind a hold and is confirmed exactly once (US-134, US-135, US-017).
+  const guest = await guestCheckout(i, lotId);
   await capacityHolds();
-  return { reference: booking.reference, pool: r.pool, ms };
+  return { reference: booking.reference, pool: r.pool, ms, guest };
+}
+
+async function guestCheckout(i: number, lotId: string) {
+  const mobile = `+234708${String(10_000_000 + i).slice(1)}`;
+  await ok("POST", "/auth/otp/request", { mobile });
+  const v = await ok<{ registrationToken: string }>("POST", "/auth/otp/verify", { mobile, code: await code(mobile) });
+  const reg = await ok<{ accessToken: string; user: { id: string }; vehicle: { id: string } }>("POST", "/registrations", {
+    registrationToken: v.registrationToken, name: `Demo Guest ${i}`, userType: "guest", vehicle: { plate: `GST${String(100 + i).padStart(3, "0")}BB` },
+  });
+  const auth = { Authorization: `Bearer ${reg.accessToken}` };
+  const start = new Date(Date.UTC(2030, 0, 1 + i, 9)).toISOString(); // 10:00 WAT, a day per run
+  const quote = await ok<{ paymentPath: string; amountKobo: string; pools: Array<{ kind: string; available: number }> }>(
+    "GET", `/lots/${lotId}/availability?start=${encodeURIComponent(start)}&hours=2`, undefined, auth);
+  eq([quote.paymentPath, quote.amountKobo, quote.pools.map((p) => p.kind)], ["checkout", (RATE * 2n).toString(), ["open"]], "a guest is quoted checkout, open share only");
+  const before = quote.pools[0]!.available;
+
+  const c = await ok<{ holdId: string; reference: string; state: string; payment: { reference: string } }>(
+    "POST", "/checkouts", { lotId, vehicleId: reg.vehicle.id, start, hours: 2 }, { ...auth, "Idempotency-Key": randomUUID() });
+  eq(c.state, "held", "the space is held while the guest pays");
+  const during = await ok<{ pools: Array<{ available: number }> }>("GET", `/lots/${lotId}/availability?start=${encodeURIComponent(start)}&hours=2`, undefined, auth);
+  eq(during.pools[0]!.available, before - 1, "the hold counts against the pool (§4.13 step 4)");
+  const early = await ok<{ state: string }>("POST", `/checkouts/${c.holdId}/verify`, undefined, auth);
+  eq(early.state, "held", "nothing is confirmed before the provider says it is paid");
+
+  await sim.pay(c.payment.reference, { channel: "card" });
+  await sim.resendWebhooks(c.payment.reference);
+  await sim.resendWebhooks(c.payment.reference);
+  const done = await ok<{ state: string; reservationId: string }>("POST", `/checkouts/${c.holdId}/verify`, undefined, auth);
+  eq(done.state, "confirmed", "the hold converts once paid");
+  const after = await ok<{ pools: Array<{ available: number }> }>("GET", `/lots/${lotId}/availability?start=${encodeURIComponent(start)}&hours=2`, undefined, auth);
+  eq(after.pools[0]!.available, before - 1, "converting does not release and re-take the space");
+  const counts = await one<{ res: number; ledger: number; hooks: number }>(
+    `SELECT (SELECT count(*) FROM reservation WHERE user_id = $1)::int AS res,
+            (SELECT count(*) FROM payment_ledger_entry WHERE user_id = $1 AND entry_type = 'checkout_payment')::int AS ledger,
+            (SELECT times_received FROM webhook_event WHERE reference = $2) AS hooks`, [reg.user.id, c.payment.reference]);
+  eq([counts.res, counts.ledger, counts.hooks], [1, 1, 3], "three webhooks, one reservation, one ledger entry (US-017)");
+  const pass = await ok<{ pin: string }>("GET", `/reservations/${done.reservationId}/pass`, undefined, auth);
+  check(/^\d{6}$/.test(pass.pin), "the guest has a pass");
+  return c.reference;
 }
 
 /** US-023, checked independently of the engine: no pool's peak occupancy exceeds its capacity. */
@@ -269,7 +334,7 @@ async function capacityHolds() {
 // ——— main ———
 
 async function main() {
-  console.log(`Availo sprint 1 demo — ${RUNS} runs of the walking skeleton\n`);
+  console.log(`Availo demo — ${RUNS} runs: wallet top-up and booking, offline gate, guest checkout\n`);
   const { lotId, link, gate } = await setup();
   let passed = 0;
   for (let i = 1; i <= RUNS; i++) {
@@ -277,7 +342,7 @@ async function main() {
     try {
       const r = await oneRun(i, lotId, link, gate);
       passed++;
-      console.log(`  ✓ run ${String(i).padStart(2)}  ${r.reference}  ${r.pool.padEnd(6)} bay  verified offline in ${r.ms.toFixed(1)} ms  (${Date.now() - started} ms)`);
+      console.log(`  ✓ run ${String(i).padStart(2)}  ${r.reference}  ${r.pool.padEnd(6)} bay  verified offline in ${r.ms.toFixed(1)} ms  · guest ${r.guest} paid at checkout  (${Date.now() - started} ms)`);
     } catch (e) {
       console.log(`  ✗ run ${String(i).padStart(2)}  ${(e as Error).message}`);
       break;
@@ -286,20 +351,32 @@ async function main() {
 
   if (passed === RUNS) {
     // Across all runs: every booking paid once, every car in and out once, nothing flagged.
-    const totals = await one<{ reservations: number; debits: number; paid: string; charged: string; events: number; flagged: number; ended: number }>(`
+    const totals = await one<{ reservations: number; debits: number; checkouts: number; topUps: number; refunds: number; paid: string; charged: string; events: number; flagged: number; ended: number; cash: string; revenue: string; liability: string }>(`
       SELECT (SELECT count(*) FROM reservation)::int AS reservations,
              (SELECT count(*) FROM wallet_entry WHERE entry_type = 'reservation_debit')::int AS debits,
-             (SELECT (-sum(amount_kobo))::text FROM wallet_entry WHERE entry_type = 'reservation_debit') AS paid,
+             (SELECT count(*) FROM payment_ledger_entry WHERE entry_type = 'checkout_payment')::int AS checkouts,
+             (SELECT count(*) FROM payment_ledger_entry WHERE entry_type = 'top_up_payment')::int AS "topUps",
+             (SELECT count(*) FROM refund)::int AS refunds,
+             (SELECT ((SELECT -sum(amount_kobo) FROM wallet_entry WHERE entry_type = 'reservation_debit')
+                    + (SELECT sum(amount_kobo) FROM payment_ledger_entry WHERE entry_type = 'checkout_payment'))::text) AS paid,
              (SELECT sum(amount_kobo)::text FROM reservation) AS charged,
              (SELECT count(*) FROM gate_event)::int AS events,
              (SELECT count(*) FROM gate_event WHERE review_state = 'flagged')::int AS flagged,
-             (SELECT count(*) FROM parking_session WHERE state = 'ended')::int AS ended`);
+             (SELECT count(*) FROM parking_session WHERE state = 'ended')::int AS ended,
+             (SELECT sum(amount_kobo)::text FROM payment_ledger_entry) AS cash,
+             (SELECT ((SELECT -sum(amount_kobo) FROM wallet_entry WHERE entry_type = 'reservation_debit')
+                    + (SELECT sum(amount_kobo) FROM payment_ledger_entry WHERE entry_type = 'checkout_payment'))::text) AS revenue,
+             (SELECT sum(amount_kobo - allocated_kobo)::text FROM wallet_entry WHERE user_id IN (SELECT user_id FROM payment_transaction)) AS liability`);
     try {
-      eq([totals.reservations, totals.debits, totals.events, totals.flagged, totals.ended], [RUNS, RUNS, RUNS * 2, 0, RUNS], "totals across all runs");
-      eq(totals.paid, totals.charged, "debits equal reservation charges");
+      eq([totals.reservations, totals.debits, totals.checkouts, totals.topUps, totals.refunds, totals.events, totals.flagged, totals.ended],
+        [RUNS * 2, RUNS, RUNS, RUNS, 0, RUNS * 2, 0, RUNS], "totals across all runs");
+      eq(totals.paid, totals.charged, "debits plus checkout payments equal reservation charges");
+      eq(totals.cash, String(BigInt(RUNS) * (TOP_UP + RATE * 2n)), "cash received: every top-up and checkout, once");
+      eq(totals.liability, String(BigInt(RUNS) * (TOP_UP - (RATE - ALLOCATED))), "wallet liability: paid credit not yet consumed");
       await capacityHolds();
-      console.log(`\n  ${RUNS} reservations, ${RUNS} debits, ${RUNS * 2} gate records, 0 flagged, ${RUNS} sessions ended.`);
-      console.log(`  Debits ${totals.paid} kobo = charges ${totals.charged} kobo. No capacity breach.`);
+      console.log(`\n  ${RUNS * 2} reservations (${RUNS} from wallets, ${RUNS} at checkout), ${RUNS * 2} gate records, 0 flagged, 0 refunds.`);
+      console.log(`  Debits + checkouts ${totals.paid} kobo = charges ${totals.charged} kobo. No capacity breach.`);
+      console.log(`  US-062, three figures: cash received ${totals.cash} · revenue earned ${totals.revenue} · wallet liability ${totals.liability} (kobo).`);
     } catch (e) {
       console.log(`  ✗ totals  ${(e as Error).message}`);
       passed = -1;
@@ -307,6 +384,7 @@ async function main() {
   }
 
   await stopApi();
+  await sim.close();
   await db.end();
   if (passed !== RUNS) {
     console.log(`\nFAILED — ${Math.max(passed, 0)} of ${RUNS} runs passed.`);

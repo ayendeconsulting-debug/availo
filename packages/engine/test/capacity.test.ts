@@ -1,6 +1,6 @@
 /** Pure-engine unit tests for the capacity rules behind US-023, US-024, US-133. No database. */
 import { describe, expect, it } from "vitest";
-import { candidatePools, peakOccupancy, type Claim, type PoolSnapshot, type UserSnapshot } from "../src/index.js";
+import { allocatedPart, candidatePools, peakOccupancy, type Claim, type PoolSnapshot, type UserSnapshot } from "../src/index.js";
 
 const h = (hour: number) => new Date(Date.UTC(2030, 0, 1, hour));
 const w = (from: number, to: number) => ({ start: h(from), end: h(to) });
@@ -41,7 +41,7 @@ describe("candidatePools (US-133, US-024, US-047)", () => {
     { id: "camp", lotId: "L", kind: "campus", capacity: 12 },
   ];
   const user = (userType: UserSnapshot["userType"], accessibleEligible = false): UserSnapshot => ({
-    id: "u", userType, verificationState: "verified", accessibleEligible,
+    id: "u", userType, verificationState: "verified", accessibleEligible, walletEnabled: userType !== "guest",
   });
   const kinds = (r: ReturnType<typeof candidatePools>) => (r.ok ? r.pools.map((p) => p.kind) : r.reason);
 
@@ -66,5 +66,30 @@ describe("candidatePools (US-133, US-024, US-047)", () => {
 
   it("refuses accessible capacity to an ineligible account whatever it sends", () => {
     expect(kinds(candidatePools(user("staff", false), pools, { accessible: true }))).toBe("NOT_ELIGIBLE");
+  });
+});
+
+describe("allocatedPart — OD-12, allocated credit before paid credit (US-018)", () => {
+  const bal = (totalKobo: bigint, allocatedKobo: bigint) => ({ totalKobo, allocatedKobo });
+
+  it("draws the whole debit from allocated credit when it covers it", () => {
+    expect(allocatedPart(bal(10_000n, 6_000n), 5_000n)).toBe(5_000n);
+  });
+
+  it("draws allocated credit to zero, then paid credit", () => {
+    expect(allocatedPart(bal(10_000n, 3_000n), 5_000n)).toBe(3_000n);
+  });
+
+  it("draws nothing from allocated credit when there is none", () => {
+    expect(allocatedPart(bal(10_000n, 0n), 5_000n)).toBe(0n);
+  });
+
+  it("treats a negative allocated bucket as empty", () => {
+    expect(allocatedPart(bal(10_000n, -500n), 5_000n)).toBe(0n);
+  });
+
+  it("can be configured paid-first: paid credit to zero, then allocated", () => {
+    expect(allocatedPart(bal(10_000n, 6_000n), 5_000n, "paid_first")).toBe(1_000n);
+    expect(allocatedPart(bal(10_000n, 2_000n), 5_000n, "paid_first")).toBe(0n);
   });
 });
